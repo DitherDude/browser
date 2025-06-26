@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = ["frontend", "sample"]
+
+[workspace.dependencies]
+iced = "0.13.1"
+regex = "1.11.1"

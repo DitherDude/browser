@@ -1,0 +1,9 @@
+[package]
+name = "frontend"
+version = "0.1.0"
+edition = "2024"
+default-run = "frontend"
+
+[dependencies]
+iced.workspace = true
+regex.workspace = true
