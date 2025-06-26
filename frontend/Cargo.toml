@@ -5,5 +5,5 @@ edition = "2024"
 default-run = "frontend"
 
 [dependencies]
-iced.workspace = true
+gtk.workspace = true
 regex.workspace = true

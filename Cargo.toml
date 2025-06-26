@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["frontend", "sample"]
+members = ["frontend"]
 
 [workspace.dependencies]
-iced = "0.13.1"
+gtk = { version = "0.9.7", package = "gtk4", features = ["v4_18"] }
 regex = "1.11.1"
