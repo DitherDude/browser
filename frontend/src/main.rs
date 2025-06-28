@@ -13,6 +13,16 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &Application, elements: &[(String, String)]) {
+    let widgets = glib_box(elements);
+    let window = ApplicationWindow::builder()
+        .application(app)
+        .title(stringify("title", elements, "Dither Browser"))
+        .child(&widgets)
+        .build();
+    window.present();
+}
+
+fn glib_box(elements: &[(String, String)]) -> gtk::Box {
     let widgets = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
@@ -34,18 +44,29 @@ fn build_ui(app: &Application, elements: &[(String, String)]) {
                     .build();
                 widgets.append(&button);
             }
+            "box" => {
+                let settings = get_elements(&element.1);
+                let margin_top = numerify("margin_top", &settings, 12);
+                let margin_bottom = numerify("margin_bottom", &settings, 12);
+                let margin_start = numerify("margin_start", &settings, 12);
+                let margin_end = numerify("margin_end", &settings, 12);
+                let items = glib_box(&get_elements(&getrawcontents("data", &settings, "")));
+                let gtk_box = gtk::Box::builder()
+                    .margin_top(margin_top)
+                    .margin_bottom(margin_bottom)
+                    .margin_start(margin_start)
+                    .margin_end(margin_end)
+                    .build();
+                gtk_box.append(&items);
+                widgets.append(&gtk_box);
+            }
             "text" => {
                 break;
             }
             _ => {}
         }
     }
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title(stringify("title", elements, "Dither Browser"))
-        .child(&widgets)
-        .build();
-    window.present();
+    widgets
 }
 
 fn get_elements(data: &str) -> Vec<(String, String)> {
@@ -135,7 +156,7 @@ fn get_elements(data: &str) -> Vec<(String, String)> {
         block.push(char);
         escaping = false;
     }
-    if deftype == 3 {
+    if deftype > 1 {
         output.push((header.clone(), block.trim().to_string()));
     }
     output
@@ -168,5 +189,16 @@ fn numerify(key: &str, array: &[(String, String)], fallback: i32) -> i32 {
     match input {
         None => fallback,
         Some(x) => x.parse().unwrap_or(fallback),
+    }
+}
+
+fn getrawcontents(key: &str, array: &[(String, String)], fallback: &str) -> String {
+    let input = array
+        .iter()
+        .find(|&(skey, _)| skey == key)
+        .map(|(_, value)| value.clone());
+    match input {
+        None => fallback.to_string(),
+        Some(x) => x,
     }
 }
