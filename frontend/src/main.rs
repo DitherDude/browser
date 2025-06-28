@@ -12,24 +12,28 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
-fn build_ui(app: &Application, elements: &[(String, String)]) {
+fn build_ui(app: &Application, elements: &[Dictionary]) {
     let widgets = glib_box(elements);
+    let information = get_elements(&getrawcontents("data", elements, ""));
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(stringify("title", elements, "Dither Browser"))
+        .title(stringify("title", &information, "Dither Browser"))
         .child(&widgets)
         .build();
     window.present();
 }
 
-fn glib_box(elements: &[(String, String)]) -> gtk::Box {
+fn glib_box(elements: &[Dictionary]) -> gtk::Box {
     let widgets = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
     for element in elements {
-        match element.0.as_str() {
+        match element.key.as_str() {
+            "data" => {
+                break;
+            }
             "button" => {
-                let settings = get_elements(&element.1);
+                let settings = get_elements(&element.value);
                 let label = stringify("label", &settings, "Edit Me!");
                 let margin_top = numerify("margin_top", &settings, 12);
                 let margin_bottom = numerify("margin_bottom", &settings, 12);
@@ -45,7 +49,7 @@ fn glib_box(elements: &[(String, String)]) -> gtk::Box {
                 widgets.append(&button);
             }
             "box" => {
-                let settings = get_elements(&element.1);
+                let settings = get_elements(&element.value);
                 let margin_top = numerify("margin_top", &settings, 12);
                 let margin_bottom = numerify("margin_bottom", &settings, 12);
                 let margin_start = numerify("margin_start", &settings, 12);
@@ -60,16 +64,13 @@ fn glib_box(elements: &[(String, String)]) -> gtk::Box {
                 gtk_box.append(&items);
                 widgets.append(&gtk_box);
             }
-            "text" => {
-                break;
-            }
             _ => {}
         }
     }
     widgets
 }
 
-fn get_elements(data: &str) -> Vec<(String, String)> {
+fn get_elements(data: &str) -> Vec<Dictionary> {
     let mut output = Vec::new();
     let mut depth = 0_i32;
     let mut header = String::new();
@@ -107,7 +108,7 @@ fn get_elements(data: &str) -> Vec<(String, String)> {
                 if instring.is_none() {
                     depth -= 1;
                     if depth == 0 {
-                        output.push((header.clone(), block.trim().to_string()));
+                        output.push(Dictionary::new(header.clone(), block.trim().to_string()));
                         block = String::new();
                         continue;
                     }
@@ -137,7 +138,10 @@ fn get_elements(data: &str) -> Vec<(String, String)> {
                                 deftype = 0;
                                 depth -= 1;
                                 if depth == 0 {
-                                    output.push((header.clone(), block.trim().to_string()));
+                                    output.push(Dictionary::new(
+                                        header.clone(),
+                                        block.trim().to_string(),
+                                    ));
                                     block = String::new();
                                     continue;
                                 }
@@ -157,16 +161,17 @@ fn get_elements(data: &str) -> Vec<(String, String)> {
         escaping = false;
     }
     if deftype > 1 {
-        output.push((header.clone(), block.trim().to_string()));
+        output.push(Dictionary::new(header.clone(), block.trim().to_string()));
     }
+    println!("Output: {:?}", output);
     output
 }
 
-fn stringify(key: &str, array: &[(String, String)], fallback: &str) -> String {
+fn stringify(key: &str, array: &[Dictionary], fallback: &str) -> String {
     let input = array
         .iter()
-        .find(|&(skey, _)| skey == key)
-        .map(|(_, value)| value.clone());
+        .find(|dict| dict.key == key)
+        .map(|dict| dict.value.clone());
     match input {
         None => fallback.to_string(),
         Some(x) => {
@@ -181,24 +186,36 @@ fn stringify(key: &str, array: &[(String, String)], fallback: &str) -> String {
     }
 }
 
-fn numerify(key: &str, array: &[(String, String)], fallback: i32) -> i32 {
+fn numerify(key: &str, array: &[Dictionary], fallback: i32) -> i32 {
     let input = array
         .iter()
-        .find(|&(skey, _)| skey == key)
-        .map(|(_, value)| value.clone());
+        .find(|dict| dict.key == key)
+        .map(|dict| dict.value.clone());
     match input {
         None => fallback,
         Some(x) => x.parse().unwrap_or(fallback),
     }
 }
 
-fn getrawcontents(key: &str, array: &[(String, String)], fallback: &str) -> String {
+fn getrawcontents(key: &str, array: &[Dictionary], fallback: &str) -> String {
     let input = array
         .iter()
-        .find(|&(skey, _)| skey == key)
-        .map(|(_, value)| value.clone());
+        .find(|dict| dict.key == key)
+        .map(|dict| dict.value.clone());
     match input {
         None => fallback.to_string(),
         Some(x) => x,
+    }
+}
+
+#[derive(Debug)]
+struct Dictionary {
+    key: String,
+    value: String,
+}
+
+impl Dictionary {
+    fn new(key: String, value: String) -> Dictionary {
+        Dictionary { key, value }
     }
 }
