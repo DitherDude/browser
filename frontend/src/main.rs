@@ -49,101 +49,96 @@ fn build_ui(app: &Application, elements: &[(String, String)]) {
 }
 
 fn get_elements(data: &str) -> Vec<(String, String)> {
+    let mut output = Vec::new();
     let mut depth = 0_i32;
-    let mut datatype = 0u8;
+    let mut header = String::new();
+    let mut block = String::new();
+    let mut instring = None;
     let mut escaping = false;
-    let mut tailing = false;
-    let mut result = Vec::new();
-    let mut head = String::new();
-    let mut subdata = String::new();
+    let mut deftype = 0u8;
     for char in data.chars() {
-        let mut subescaping = false;
-        subdata.push(char);
-        if !char.is_numeric() && datatype == 3 {
-            datatype = 0;
-            depth -= 1;
-            if depth == 0 {
-                subdata.pop();
-                tailing = false;
-                result.push((head.trim().to_string(), subdata.trim().to_string()));
-                println!("Head: {}, Tail: {}", head.trim(), subdata.trim());
-                subdata = String::new();
-                head = String::new();
-            } else if depth < 0 {
-                return Vec::new();
-            }
+        if depth < 0 {
+            break;
         }
         match char {
-            '{' | ':' | '=' => {
-                if datatype == 0 && !escaping {
-                    if !tailing {
-                        subdata.pop();
-                        head = subdata.trim().to_string();
-                        subdata = String::new();
-                    }
-                    tailing = true;
+            '{' => {
+                if instring.is_none() {
                     depth += 1;
+                    if depth == 1 {
+                        header = block.trim().to_string();
+                        block = String::new();
+                        continue;
+                    }
+                }
+            }
+            '=' | ':' => {
+                if instring.is_none() && depth == 0 {
+                    deftype = 1;
+                    depth += 1;
+                    if depth == 1 {
+                        header = block.trim().to_string();
+                        block = String::new();
+                        continue;
+                    }
                 }
             }
             '}' => {
-                if datatype == 0 && !escaping {
+                if instring.is_none() {
                     depth -= 1;
                     if depth == 0 {
-                        subdata.pop();
-                        tailing = false;
-                        result.push((head.trim().to_string(), subdata.trim().to_string()));
-                        println!("Head: {}, Tail: {}", head.trim(), subdata.trim());
-                        subdata = String::new();
-                        head = String::new();
-                    } else if depth < 0 {
-                        return Vec::new();
+                        output.push((header.clone(), block.trim().to_string()));
+                        block = String::new();
+                        continue;
                     }
                 }
             }
-            '\\' => {
-                if datatype != 0 && !escaping && depth < 2 {
-                    subescaping = true;
-                    subdata.pop();
-                }
-            }
-            '\'' | '"' => {
-                if !tailing {
-                    return Vec::new();
-                }
-                if !escaping {
-                    if datatype == 0 {
-                        depth += 1;
-                        datatype = if char == '\'' { 1 } else { 2 };
-                    } else if datatype == if char == '\'' { 1 } else { 2 } {
-                        datatype = 0;
-                        depth -= 1;
-                        if depth == 0 {
-                            tailing = false;
-                            result.push((head.trim().to_string(), subdata.trim().to_string()));
-                            println!("Head: {}, Tail: {}", head.trim(), subdata.trim());
-                            subdata = String::new();
-                            head = String::new();
-                        } else if depth < 0 {
-                            return Vec::new();
+            x => {
+                if depth == 1 {
+                    match x {
+                        '\'' | '"' => {
+                            if instring.is_none() {
+                                instring = Some(x);
+                            } else if instring == Some(x) && !escaping {
+                                instring = None;
+                                if deftype == 1 {
+                                    deftype = 2;
+                                }
+                            }
                         }
+                        '\\' => {
+                            if instring.is_some() && !escaping {
+                                escaping = true;
+                                continue;
+                            }
+                        }
+                        ' ' | '\n' => {
+                            if instring.is_none() && deftype >= 2 {
+                                deftype = 0;
+                                depth -= 1;
+                                if depth == 0 {
+                                    output.push((header.clone(), block.trim().to_string()));
+                                    block = String::new();
+                                    continue;
+                                }
+                            }
+                        }
+                        '0'..='9' => {
+                            if instring.is_none() && deftype == 1 {
+                                deftype = 3;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
-            ';' | ',' => {
-                if !escaping && datatype == 0 {
-                    subdata.pop();
-                }
-            }
-            '0'..='9' => {
-                if !escaping && datatype == 0 {
-                    datatype = 3;
-                }
-            }
-            _ => {}
         }
-        escaping = subescaping;
+        block.push(char);
+        escaping = false;
     }
-    result
+    if deftype == 3 {
+        output.push((header.clone(), block.trim().to_string()));
+    }
+    output
 }
 
 fn stringify(key: &str, array: &[(String, String)], fallback: &str) -> String {
