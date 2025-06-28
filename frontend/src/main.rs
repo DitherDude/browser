@@ -28,12 +28,10 @@ fn glib_box(elements: &[Dictionary]) -> gtk::Box {
         .orientation(gtk::Orientation::Vertical)
         .build();
     for element in elements {
-        match element.key.as_str() {
-            "data" => {
-                break;
-            }
+        let settings = get_elements(&element.value);
+        let styleclasses = listify("styleclasses", &settings, &["default"]);
+        let widget: Option<gtk::Widget> = match element.key.as_str() {
             "button" => {
-                let settings = get_elements(&element.value);
                 let label = stringify("label", &settings, "Edit Me!");
                 let margin_top = numerify("margin_top", &settings, 12);
                 let margin_bottom = numerify("margin_bottom", &settings, 12);
@@ -46,10 +44,9 @@ fn glib_box(elements: &[Dictionary]) -> gtk::Box {
                     .margin_start(margin_start)
                     .margin_end(margin_end)
                     .build();
-                widgets.append(&button);
+                Some(button.into())
             }
             "box" => {
-                let settings = get_elements(&element.value);
                 let margin_top = numerify("margin_top", &settings, 12);
                 let margin_bottom = numerify("margin_bottom", &settings, 12);
                 let margin_start = numerify("margin_start", &settings, 12);
@@ -62,9 +59,15 @@ fn glib_box(elements: &[Dictionary]) -> gtk::Box {
                     .margin_end(margin_end)
                     .build();
                 gtk_box.append(&items);
-                widgets.append(&gtk_box);
+                Some(gtk_box.into())
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(w) = widget {
+            for styleclass in styleclasses {
+                w.add_css_class(&styleclass);
+            }
+            widgets.append(&w);
         }
     }
     widgets
@@ -77,7 +80,7 @@ fn get_elements(data: &str) -> Vec<Dictionary> {
     let mut block = String::new();
     let mut instring = None;
     let mut escaping = false;
-    let mut deftype = 0u8;
+    let mut deftype = 0i8;
     for char in data.chars() {
         if depth < 0 {
             break;
@@ -163,49 +166,52 @@ fn get_elements(data: &str) -> Vec<Dictionary> {
     if deftype > 1 {
         output.push(Dictionary::new(header.clone(), block.trim().to_string()));
     }
-    println!("Output: {:?}", output);
     output
 }
 
 fn stringify(key: &str, array: &[Dictionary], fallback: &str) -> String {
-    let input = array
+    array
         .iter()
         .find(|dict| dict.key == key)
-        .map(|dict| dict.value.clone());
-    match input {
-        None => fallback.to_string(),
-        Some(x) => {
-            if (x.starts_with('\"') && x.ends_with('\"'))
-                || (x.starts_with('\'') && x.ends_with('\''))
-            {
+        .map(|dict| dict.value.clone())
+        .map(|x| {
+            if x.starts_with('"') && x.ends_with('"') || x.starts_with('\'') && x.ends_with('\'') {
                 x[1..x.len() - 1].to_string()
             } else {
-                fallback.to_string()
+                x
             }
-        }
-    }
+        })
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn numerify(key: &str, array: &[Dictionary], fallback: i32) -> i32 {
-    let input = array
+    array
         .iter()
         .find(|dict| dict.key == key)
-        .map(|dict| dict.value.clone());
-    match input {
-        None => fallback,
-        Some(x) => x.parse().unwrap_or(fallback),
-    }
+        .map(|dict| dict.value.clone())
+        .unwrap_or(fallback.to_string())
+        .parse()
+        .unwrap_or(fallback)
+}
+
+fn listify(key: &str, array: &[Dictionary], fallback: &[&str]) -> Vec<String> {
+    array
+        .iter()
+        .find(|dict| dict.key == key)
+        .map(|dict| {
+            let value = &dict.value;
+            let items = value.split(',');
+            items.map(|x| x.trim().to_string()).collect()
+        })
+        .unwrap_or_else(|| fallback.iter().map(|x| x.to_string()).collect())
 }
 
 fn getrawcontents(key: &str, array: &[Dictionary], fallback: &str) -> String {
-    let input = array
+    array
         .iter()
         .find(|dict| dict.key == key)
-        .map(|dict| dict.value.clone());
-    match input {
-        None => fallback.to_string(),
-        Some(x) => x,
-    }
+        .map(|dict| dict.value.clone())
+        .unwrap_or(fallback.to_owned())
 }
 
 #[derive(Debug)]
