@@ -111,8 +111,14 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
             return;
         }
     };
-    info!("Connection from {}:{}.", peer.ip(), peer.port());
     let data = receive_data(&stream);
+    let request = String::from_utf8_lossy(&data[9..]);
+    info!(
+        "Connection from {}:{} requesting {}.",
+        peer.ip(),
+        peer.port(),
+        request
+    );
     if data.len() < 9 {
         warn!(
             "Connection from {}:{} was too short.",
@@ -129,7 +135,7 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         Ordering::Less => send_error(&stream, 426),
         _ => (),
     }
-    let payload = resolve(&String::from_utf8_lossy(&data[9..]), sql_url, data[9] == 0).await;
+    let payload = resolve(&request, sql_url, data[9] == 0).await;
     send_data(&payload, &stream);
     stream
         .shutdown(std::net::Shutdown::Both)
