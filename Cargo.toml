@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "backend","dns_provider", "frontend", "utils"]
+members = [ "backend", "dns_cacher","dns_provider", "frontend", "utils"]
 
 [workspace.dependencies]
 gtk = { version = "0.9.7", package = "gtk4", features = ["v4_18"] }

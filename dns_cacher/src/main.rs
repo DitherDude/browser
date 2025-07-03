@@ -7,7 +7,7 @@ use std::{
 use tracing::{Level, debug, error, info, trace, warn};
 use utils::{receive_data, send_data};
 
-const DEFAULT_PORT: u16 = 6202;
+const DEFAULT_PORT: u16 = 6203;
 const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
 
 #[async_std::main]
@@ -112,14 +112,14 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         }
     };
     let data = receive_data(&stream);
-    let request = String::from_utf8_lossy(&data[9..]);
+    let request = String::from_utf8_lossy(&data[8..]);
     info!(
         "Connection from {}:{} requesting {}.",
         peer.ip(),
         peer.port(),
         request
     );
-    if data.len() < 10 {
+    if data.len() < 9 {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
         send_error(&stream, 402);
         return;
@@ -131,14 +131,21 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         Ordering::Less => send_error(&stream, 426),
         _ => (),
     }
-    let payload = resolve(&request, sql_url, data[9] == 0).await;
+    let payload = resolve(&request, sql_url).await;
     send_data(&payload, &stream);
     stream
         .shutdown(std::net::Shutdown::Both)
         .unwrap_or_default();
 }
 
-async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u8> {
+fn send_error(stream: &TcpStream, err: i32) {
+    send_data(&err.to_le_bytes(), stream);
+    stream
+        .shutdown(std::net::Shutdown::Both)
+        .unwrap_or_default();
+}
+
+async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
     trace!("Resolving {}.", destination);
     trace!("Connecting to database...");
     debug!("Database connection URL: {}", sql_url);
@@ -151,8 +158,8 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
     };
     if let Ok(record) = sqlx::query!(
         r#"
-        SELECT dns_ip, dns_port
-        FROM dns_records
+        SELECT domain_ip, domain_port
+        FROM dns_cache
         WHERE name = ?
         "#,
         ".".to_owned()
@@ -160,12 +167,12 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
     .fetch_one(&pool)
     .await
     {
-        let dns_ip = record.dns_ip;
-        let dns_port = record.dns_port;
-        if dns_ip.is_some() && dns_port.is_some() {
-            let return_addr = format!("{}:{}", dns_ip.unwrap(), dns_port.unwrap());
+        let domain_ip = record.domain_ip;
+        let domain_port = record.domain_port;
+        if domain_ip.is_some() && domain_port.is_some() {
+            let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
             debug!(
-                "This DNS server {} has moved to {}!",
+                "This DNS cache server {} has moved to {}!",
                 destination, return_addr
             );
             let mut payload = 301u32.to_le_bytes().to_vec();
@@ -175,8 +182,8 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
     }
     match sqlx::query!(
         r#"
-        SELECT domain_ip, domain_port, dns_ip, dns_port
-        FROM dns_records
+        SELECT domain_ip, domain_port
+        FROM dns_cache
         WHERE name = ?
         "#,
         destination
@@ -187,30 +194,7 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
         Ok(record) => {
             let domain_ip = record.domain_ip;
             let domain_port = record.domain_port;
-            let dns_ip = record.dns_ip;
-            let dns_port = record.dns_port;
-            if is_last_block {
-                if domain_ip.is_some() && domain_port.is_some() {
-                    let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
-                    trace!("Resolved {} to {}.", destination, return_addr);
-                    let mut payload = 200u32.to_le_bytes().to_vec();
-                    payload.extend_from_slice(return_addr.as_bytes());
-                    return payload;
-                } else if dns_ip.is_some() && dns_port.is_some() {
-                    let return_addr = format!("{}:{}", dns_ip.unwrap(), dns_port.unwrap());
-                    trace!("Resolved {} to {}.", destination, return_addr);
-                    let mut payload = 302u32.to_le_bytes().to_vec();
-                    payload.extend_from_slice(return_addr.as_bytes());
-                }
-                warn!("Failed to resolve {}.", destination);
-                return 410u32.to_le_bytes().to_vec();
-            } else if dns_ip.is_some() && dns_port.is_some() {
-                let return_addr = format!("{}:{}", dns_ip.unwrap(), dns_port.unwrap());
-                trace!("Resolved {} to DNS {}.", destination, return_addr);
-                let mut payload = 302u32.to_le_bytes().to_vec();
-                payload.extend_from_slice(return_addr.as_bytes());
-                return payload;
-            } else if domain_ip.is_some() && domain_port.is_some() {
+            if domain_ip.is_some() && domain_port.is_some() {
                 let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
                 trace!("Resolved {} to {}.", destination, return_addr);
                 let mut payload = 200u32.to_le_bytes().to_vec();
@@ -218,20 +202,13 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
                 return payload;
             }
             warn!("Failed to resolve {}.", destination);
-            return resolve_wildcard(&pool).await;
+            421u32.to_le_bytes().to_vec()
         }
         Err(e) => {
             warn!("Failed to fetch record for {}: {}", destination, e);
-            return resolve_wildcard(&pool).await;
+            421u32.to_le_bytes().to_vec()
         }
     }
-}
-
-fn send_error(stream: &TcpStream, err: i32) {
-    send_data(&err.to_le_bytes(), stream);
-    stream
-        .shutdown(std::net::Shutdown::Both)
-        .unwrap_or_default();
 }
 
 fn version_compare(client: (u32, u32), peer: std::net::SocketAddr) -> Ordering {
@@ -261,47 +238,14 @@ fn version_compare(client: (u32, u32), peer: std::net::SocketAddr) -> Ordering {
     Ordering::Equal
 }
 
-async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {
-    debug!("Fetching wildcard record...");
-    match sqlx::query!(
-        r#"
-        SELECT domain_ip, domain_port
-        FROM dns_records
-        WHERE name = ?
-        "#,
-        "."
-    )
-    .fetch_one(pool)
-    .await
-    {
-        Ok(record) => {
-            let domain_ip = record.domain_ip;
-            let domain_port = record.domain_port;
-            if domain_ip.is_some() && domain_port.is_some() {
-                let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
-                let mut payload = 203u32.to_le_bytes().to_vec();
-                payload.extend_from_slice(return_addr.as_bytes());
-                return payload;
-            }
-            warn!("Wildcard error exists, but missing ip record.");
-        }
-        Err(e) => {
-            warn!("Failed to fetch wildcard record: {}", e);
-        }
-    }
-    421u32.to_le_bytes().to_vec()
-}
-
 async fn check_database(pool: &MySqlPool) {
     trace!("Checking database integrity...");
     let sql = r#"
-    CREATE TABLE IF NOT EXISTS dns_records (
+    CREATE TABLE IF NOT EXISTS dns_cache (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(255) UNIQUE NOT NULL,
         domain_ip VARCHAR(63) NULL,
-        domain_port SMALLINT UNSIGNED NULL CHECK (domain_port BETWEEN 0 AND 25565),
-        dns_ip VARCHAR(63) NULL,
-        dns_port SMALLINT UNSIGNED NULL CHECK (dns_port BETWEEN 0 AND 25565)
+        domain_port SMALLINT UNSIGNED NULL CHECK (domain_port BETWEEN 0 AND 25565)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     "#;
     match sqlx::query(sql).execute(pool).await {
