@@ -80,14 +80,6 @@ fn resolve(stream: &TcpStream, destination: &str, prev: &str) -> Option<String> 
         _ => {}
     }
     match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-        410 => {
-            // 410: Client Error Gone
-            let fqdn = String::from_utf8_lossy(&response[4..]);
-            if !is_last_block {
-                warn!("Reached end of DNS chain early! Rectifying FQN as {}", fqdn);
-            }
-            return Some(fqdn.into_owned());
-        }
         200 => {
             // 200: Server OK / Success
             let fqdn = String::from_utf8_lossy(&response[4..]);
@@ -146,6 +138,14 @@ fn resolve(stream: &TcpStream, destination: &str, prev: &str) -> Option<String> 
             };
             debug!("Attempting to resolve {}", newdestination);
             return resolve(&newstream, &newdestination, &next_prev);
+        }
+        410 => {
+            // 410: Client Error Gone
+            let fqdn = String::from_utf8_lossy(&response[4..]);
+            if !is_last_block {
+                warn!("Reached end of DNS chain early! Rectifying FQN as {}", fqdn);
+            }
+            return Some(fqdn.into_owned());
         }
         421 => {
             // 421: Misdirected Request

@@ -120,11 +120,7 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         request
     );
     if data.len() < 10 {
-        warn!(
-            "Connection from {}:{} was too short.",
-            peer.ip(),
-            peer.port()
-        );
+        warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
         send_error(&stream, 402);
         return;
     }
