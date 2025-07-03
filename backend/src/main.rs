@@ -3,11 +3,12 @@ use tracing::{Level, debug, error, info, trace, warn};
 use utils::{receive_data, send_data};
 
 const DNS_IP: &str = "0.0.0.0:6202";
+const CACHER_IP: &str = "0.0.0.0:6203";
 const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
 
 fn main() {
     let mut dns_ip = String::from(DNS_IP);
-    let mut cacher_ip = String::new();
+    let mut cacher_ip = String::from(CACHER_IP);
     let mut verbose_level = 0u8;
     let mut dest_fqdn = String::new();
     let args: Vec<String> = env::args().collect();
@@ -55,26 +56,6 @@ fn main() {
     });
     let mut fqdn: (Option<String>, Option<String>) = (None, None);
     'breakable: {
-        if dns_ip != String::new() {
-            trace!("Attempting to resolve DNS Server {}", dns_ip);
-            let Ok(stream) = TcpStream::connect(&dns_ip) else {
-                warn!("Failed to resolve to DNS Server {}!", dns_ip);
-                break 'breakable;
-            };
-            info!("Connected to {}", dns_ip);
-            debug!("Attempting to resolve {}", dest_fqdn);
-            let dest_ip = dns_resolve(&stream, &dest_fqdn, "", &dns_ip);
-            info!(
-                "Resolved {} to {}!",
-                dest_fqdn,
-                dest_ip.clone().unwrap_or_default()
-            );
-            if dest_ip != Some(String::new()) {
-                fqdn.0 = dest_ip;
-            }
-        }
-    }
-    'breakable: {
         if cacher_ip != String::new() {
             trace!("Contacting DNS Cacher {}", cacher_ip);
             let Ok(stream) = TcpStream::connect(&cacher_ip) else {
@@ -91,6 +72,26 @@ fn main() {
             );
             if dest_ip != Some(String::new()) {
                 fqdn.1 = dest_ip;
+            }
+        }
+    }
+    'breakable: {
+        if dns_ip != String::new() {
+            trace!("Attempting to resolve DNS Server {}", dns_ip);
+            let Ok(stream) = TcpStream::connect(&dns_ip) else {
+                warn!("Failed to resolve to DNS Server {}!", dns_ip);
+                break 'breakable;
+            };
+            info!("Connected to {}", dns_ip);
+            debug!("Attempting to resolve {}", dest_fqdn);
+            let dest_ip = dns_resolve(&stream, &dest_fqdn, "", &dns_ip);
+            info!(
+                "Resolved {} to {}!",
+                dest_fqdn,
+                dest_ip.clone().unwrap_or_default()
+            );
+            if dest_ip != Some(String::new()) {
+                fqdn.0 = dest_ip;
             }
         }
     }
