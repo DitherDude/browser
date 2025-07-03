@@ -127,14 +127,18 @@ fn resolve(stream: &TcpStream, destination: &str, prev: &str) -> Option<String> 
                 );
             }
             trace!("Attempting to resolve intermediary DNS server {}", &fqdn);
-            let newdestination = destination
-                .rsplit('.')
-                .skip(1)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join(".");
+            let newdestination = if !is_last_block {
+                destination
+                    .rsplit('.')
+                    .skip(1)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join(".")
+            } else {
+                destination.to_string()
+            };
             debug!("Passing {} to {}", newdestination, &fqdn);
             let Ok(newstream) = TcpStream::connect(fqdn.to_string()) else {
                 error!("Failed to resolve intermediary DNS {}!", fqdn);

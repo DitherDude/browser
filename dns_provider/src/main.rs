@@ -65,9 +65,9 @@ async fn main() {
     };
     trace!("Attempting to connect to database...");
     match MySqlPool::connect(&sql_url).await {
-        Ok(_pool) => {
+        Ok(pool) => {
             debug!("Database connection successful!");
-            // Todo
+            check_database(&pool).await;
         }
         Err(e) => {
             error!("Failed to connect to database: {}", e);
@@ -119,7 +119,7 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         peer.port(),
         request
     );
-    if data.len() < 9 {
+    if data.len() < 10 {
         warn!(
             "Connection from {}:{} was too short.",
             peer.ip(),
@@ -294,4 +294,26 @@ async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {
         }
     }
     421u32.to_le_bytes().to_vec()
+}
+
+async fn check_database(pool: &MySqlPool) {
+    trace!("Checking database integrity...");
+    let sql = r#"
+    CREATE TABLE IF NOT EXISTS dns_records (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) UNIQUE NOT NULL,
+        domain_ip VARCHAR(63) NULL,
+        domain_port SMALLINT UNSIGNED NULL CHECK (domain_port BETWEEN 0 AND 25565),
+        dns_ip VARCHAR(63) NULL,
+        dns_port SMALLINT UNSIGNED NULL CHECK (dns_port BETWEEN 0 AND 25565)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    "#;
+    match sqlx::query(sql).execute(pool).await {
+        Ok(_) => {
+            trace!("Database integrity check passed.");
+        }
+        Err(e) => {
+            panic!("Failed to create database: {}", e);
+        }
+    };
 }
