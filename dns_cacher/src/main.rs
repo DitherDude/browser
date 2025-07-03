@@ -202,11 +202,11 @@ async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
                 return payload;
             }
             warn!("Failed to resolve {}.", destination);
-            410u32.to_le_bytes().to_vec()
+            421u32.to_le_bytes().to_vec()
         }
         Err(e) => {
             warn!("Failed to fetch record for {}: {}", destination, e);
-            410u32.to_le_bytes().to_vec()
+            421u32.to_le_bytes().to_vec()
         }
     }
 }
