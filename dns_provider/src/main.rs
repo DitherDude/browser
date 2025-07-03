@@ -15,7 +15,7 @@ async fn main() {
     let mut verbose_level = 0u8;
     let args: Vec<String> = env::args().collect();
     let mut portstr = DEFAULT_PORT.to_string();
-    let mut sql_url = String::from("mysql://root:password@localhost:3306/dns_provider");
+    let mut sql_url = String::from("mysql://root:password@localhost:3306/dns");
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
