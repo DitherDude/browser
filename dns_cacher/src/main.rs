@@ -16,19 +16,21 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let mut portstr = DEFAULT_PORT.to_string();
     let mut sql_url = String::from("mysql://root:password@localhost:3306/dns");
+    let mut overwrite = false;
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
-                "verbose" => verbose_level += 1,
+                "overwrite" => overwrite = true,
                 "port" => portstr = args[i + 1].clone(),
                 "sql-url" => sql_url = args[i + 1].clone(),
+                "verbose" => verbose_level += 1,
                 _ => panic!("Pre-init failure; unknown long-name argument: {}", arg),
             }
         } else if arg.starts_with("-") {
             let mut argindex = i;
             for char in arg.strip_prefix("-").unwrap_or_default().chars() {
                 match char {
-                    'v' => verbose_level += 1,
+                    'o' => overwrite = true,
                     'p' => {
                         portstr = args[argindex + 1].clone();
                         argindex += 1;
@@ -37,6 +39,7 @@ async fn main() {
                         sql_url = args[argindex + 1].clone();
                         argindex += 1;
                     }
+                    'v' => verbose_level += 1,
                     _ => panic!("Pre-init failure; unknown short-name argument: {}", arg),
                 }
             }
@@ -67,7 +70,7 @@ async fn main() {
     match MySqlPool::connect(&sql_url).await {
         Ok(pool) => {
             debug!("Database connection successful!");
-            check_database(&pool).await;
+            check_database(&pool, overwrite).await;
         }
         Err(e) => {
             error!("Failed to connect to database: {}", e);
@@ -238,22 +241,71 @@ fn version_compare(client: (u32, u32), peer: std::net::SocketAddr) -> Ordering {
     Ordering::Equal
 }
 
-async fn check_database(pool: &MySqlPool) {
-    trace!("Checking database integrity...");
-    let sql = r#"
-    CREATE TABLE IF NOT EXISTS dns_cache (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) UNIQUE NOT NULL,
-        domain_ip VARCHAR(63) NULL,
-        domain_port SMALLINT UNSIGNED NULL CHECK (domain_port BETWEEN 0 AND 25565)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    "#;
-    match sqlx::query(sql).execute(pool).await {
+async fn check_database(pool: &MySqlPool, overwrite: bool) {
+    trace!("Checking database schema integrity...");
+    match sqlx::query!(
+        r#"
+        SELECT
+            COUNT(*) as count
+        FROM
+            INFORMATION_SCHEMA.COLUMNS
+        WHERE
+            TABLE_NAME = 'dns_cache'
+        AND (
+            (COLUMN_NAME = 'id' AND DATA_TYPE = 'int' AND IS_NULLABLE = 'NO')
+            OR (COLUMN_NAME = 'name' AND DATA_TYPE = 'varchar' AND CHARACTER_MAXIMUM_LENGTH = 255 AND IS_NULLABLE = 'NO')
+            OR (COLUMN_NAME = 'domain_ip' AND DATA_TYPE = 'varchar' AND CHARACTER_MAXIMUM_LENGTH = 63 AND IS_NULLABLE = 'YES')
+            OR (COLUMN_NAME = 'domain_port' AND DATA_TYPE = 'smallint' AND IS_NULLABLE = 'YES')
+        );
+        "#
+    ).fetch_optional(pool).await {
+        Ok(Some(e)) => {
+            if e.count == 4 {
+                trace!("Database schema integrity check passed.");
+            } else if overwrite {
+                warn!("Database schema mismatch. Will overwite.");
+                overwrite_database(pool).await;
+                trace!("Database schema overwritten.");
+            }
+            else {
+                error!("Invalid database! Run with --overwrite to overwrite existing database.");
+                std::process::exit(1);
+            }
+        },
+        _ => {
+            if overwrite {
+                warn!("Failure to locate database. Will overwite.");
+                overwrite_database(pool).await;
+                trace!("Database overwritten.");
+            }
+            else {
+                error!("Failed to locate databse! Run with --overwrite to generate a new database.");
+                std::process::exit(1);
+            }
+        }
+    };
+}
+
+async fn overwrite_database(pool: &MySqlPool) {
+    match sqlx::query!(
+        r#"
+        CREATE TABLE IF NOT EXISTS dns_cache (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) UNIQUE NOT NULL,
+            domain_ip VARCHAR(63) NULL,
+            domain_port SMALLINT UNSIGNED NULL CHECK (domain_port BETWEEN 0 AND 25565)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        "#
+    )
+    .execute(pool)
+    .await
+    {
         Ok(_) => {
-            trace!("Database integrity check passed.");
+            info!("Database successfully created.");
         }
         Err(e) => {
-            panic!("Failed to create database: {}", e);
+            error!("Failed to create database: {}", e);
+            std::process::exit(1);
         }
     };
 }
