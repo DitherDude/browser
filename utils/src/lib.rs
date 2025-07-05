@@ -1,8 +1,9 @@
 use std::{
+    cmp::Ordering,
     io::{Read, Write},
     net::TcpStream,
 };
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 pub fn receive_data(mut stream: &TcpStream) -> Vec<u8> {
     trace!("Started receiving data.");
@@ -66,4 +67,42 @@ pub fn send_data(payload: &[u8], mut stream: &TcpStream) {
         }
     }
     trace!("Finished sending data.");
+}
+
+pub fn send_error(stream: &TcpStream, err: i32) {
+    send_data(&err.to_le_bytes(), stream);
+    stream
+        .shutdown(std::net::Shutdown::Both)
+        .unwrap_or_default();
+}
+
+pub fn version_compare(
+    client: (u32, u32),
+    peer: std::net::SocketAddr,
+    ptcl_ver: (u32, u32, u32),
+) -> Ordering {
+    if client.0 > ptcl_ver.0 {
+        warn!(
+            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+            peer.ip(),
+            peer.port(),
+            client.0,
+            client.1,
+            ptcl_ver.0,
+            ptcl_ver.1
+        );
+        return Ordering::Greater;
+    } else if client.0 < ptcl_ver.0 || (client.0 == ptcl_ver.0 && client.1 < ptcl_ver.1) {
+        warn!(
+            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+            peer.ip(),
+            peer.port(),
+            client.0,
+            client.1,
+            ptcl_ver.0,
+            ptcl_ver.1
+        );
+        return Ordering::Less;
+    }
+    Ordering::Equal
 }

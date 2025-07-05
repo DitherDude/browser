@@ -5,7 +5,7 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 use tracing::{Level, debug, error, info, trace, warn};
-use utils::{receive_data, send_data};
+use utils::{receive_data, send_data, send_error, version_compare};
 
 const DEFAULT_PORT: u16 = 6202;
 const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
@@ -127,9 +127,9 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         send_error(&stream, 402);
         return;
     }
-    let client_maj = u32::from_le_bytes(data[0..4].try_into().unwrap());
-    let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap());
-    match version_compare((client_maj, client_min), peer) {
+    let client_maj = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0, 0, 0, 0]));
+    let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0, 0, 0, 0]));
+    match version_compare((client_maj, client_min), peer, PTCL_VER) {
         Ordering::Greater => send_error(&stream, 427),
         Ordering::Less => send_error(&stream, 426),
         _ => (),
@@ -228,40 +228,6 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
             return resolve_wildcard(&pool).await;
         }
     }
-}
-
-fn send_error(stream: &TcpStream, err: i32) {
-    send_data(&err.to_le_bytes(), stream);
-    stream
-        .shutdown(std::net::Shutdown::Both)
-        .unwrap_or_default();
-}
-
-fn version_compare(client: (u32, u32), peer: std::net::SocketAddr) -> Ordering {
-    if client.0 > PTCL_VER.0 {
-        warn!(
-            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-            peer.ip(),
-            peer.port(),
-            client.0,
-            client.1,
-            PTCL_VER.0,
-            PTCL_VER.1
-        );
-        return Ordering::Greater;
-    } else if client.0 < PTCL_VER.0 || (client.0 == PTCL_VER.0 && client.1 < PTCL_VER.1) {
-        warn!(
-            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-            peer.ip(),
-            peer.port(),
-            client.0,
-            client.1,
-            PTCL_VER.0,
-            PTCL_VER.1
-        );
-        return Ordering::Less;
-    }
-    Ordering::Equal
 }
 
 async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {

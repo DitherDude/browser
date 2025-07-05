@@ -272,8 +272,11 @@ fn decode_error(response: &[u8; 4]) {
     match u32::from_le_bytes(*response) {
         400 => error!("Bad request."),
         402 => error!("Payload too small."),
+        403 => error!("Forbidden action."),
+        404 => error!("Resource not found."),
         426 => error!("Upgrade required."),
         427 => error!("Downgrade required."),
+        501 => error!("Operation not implemented."),
         _ => error!("Communication fault."),
     }
 }
