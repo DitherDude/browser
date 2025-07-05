@@ -1,3 +1,5 @@
+use async_std::task;
+use futures::{FutureExt, select};
 use std::{cmp::Ordering, env, net::TcpStream};
 use tracing::{Level, debug, error, info, trace, warn};
 use utils::{receive_data, send_data};
@@ -6,7 +8,8 @@ const DNS_IP: &str = "0.0.0.0:6202";
 const CACHER_IP: &str = "0.0.0.0:6203";
 const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
 
-fn main() {
+#[async_std::main]
+async fn main() {
     let mut dns_ip = String::from(DNS_IP);
     let mut cacher_ip = String::from(CACHER_IP);
     let mut verbose_level = 0u8;
@@ -54,66 +57,79 @@ fn main() {
     tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
         tracing_subscriber::fmt().init();
     });
-    let mut fqdn: (Option<String>, Option<String>) = (None, None);
-    'breakable: {
-        if cacher_ip != String::new() {
-            trace!("Contacting DNS Cacher {}", cacher_ip);
-            let Ok(stream) = TcpStream::connect(&cacher_ip) else {
-                warn!("Failed to contact DNS Cacher {}!", cacher_ip);
-                break 'breakable;
-            };
-            info!("Connected to {}", cacher_ip);
-            debug!("Locating {}", dest_fqdn);
-            let dest_ip = cache_resolve(&stream, &dest_fqdn, &cacher_ip);
-            info!(
-                "Resolved {} to {}!",
-                dest_fqdn,
-                dest_ip.clone().unwrap_or_default()
-            );
-            if dest_ip != Some(String::new()) {
-                fqdn.1 = dest_ip;
+    let dest_fqdn_clone = dest_fqdn.clone();
+    let mut cache_handle =
+        task::spawn(async move { cache_task(&cacher_ip, &dest_fqdn_clone).await }).fuse();
+    let dest_fqdn_clone = dest_fqdn.clone();
+    let mut dns_handle =
+        task::spawn(async move { dns_task(&dns_ip, &dest_fqdn_clone).await }).fuse();
+    let mut comparison = None;
+    let data: String = select! {
+        result = cache_handle => {
+            let mut return_data = String::new();
+            if result.is_some() {
+                info!("Cache handle returned first");
+                return_data = get_data(&result.clone().unwrap());
+                comparison = Some(task::spawn(compare_results(result.unwrap(), dns_handle, true)));
             }
-        }
-    }
-    'breakable: {
-        if dns_ip != String::new() {
-            trace!("Attempting to resolve DNS Server {}", dns_ip);
-            let Ok(stream) = TcpStream::connect(&dns_ip) else {
-                warn!("Failed to resolve to DNS Server {}!", dns_ip);
-                break 'breakable;
-            };
-            info!("Connected to {}", dns_ip);
-            debug!("Attempting to resolve {}", dest_fqdn);
-            let dest_ip = dns_resolve(&stream, &dest_fqdn, "", &dns_ip);
-            info!(
-                "Resolved {} to {}!",
-                dest_fqdn,
-                dest_ip.clone().unwrap_or_default()
-            );
-            if dest_ip != Some(String::new()) {
-                fqdn.0 = dest_ip;
+            else {
+                warn!("Cache handle returned None! Fallback to DNS handle.");
+                let dns_res = dns_handle.await;
+                if dns_res.is_some() {
+                    return_data = get_data(&dns_res.clone().unwrap());
+                }
+                else {
+                    warn!("Unable to resolve {}!", dest_fqdn);
+                }
             }
+            return_data
         }
+        result = dns_handle => {
+            let mut return_data = String::new();
+            if result.is_some() {
+                info!("DNS handle returned first");
+                return_data = get_data(&result.clone().unwrap());
+                comparison = Some(task::spawn(compare_results(result.unwrap(), cache_handle, false)));
+            }
+            else {
+                warn!("DNS handle returned None! Fallback to cache handle.");
+                let cache_res = cache_handle.await;
+                if cache_res.is_some() {
+                    return_data = get_data(&cache_res.clone().unwrap());
+                }
+                else {
+                    warn!("Unable to resolve {}!", dest_fqdn);
+                }
+            }
+            return_data
+        }
+    };
+    println!("{}", data);
+    if comparison.is_some() {
+        comparison.unwrap().await;
     }
-    if fqdn.0.is_none() && fqdn.1.is_none() {
-        error!(
-            "IP lookup failed! Neither DNS Server nor DNS Cacher could locate {}",
-            dest_fqdn
-        );
-    } else if fqdn.0 != fqdn.1 {
-        error!(
-            "IP mismatch! While resolving {}, DNS Server resolved {}, but DNS Cacher resolved {}!",
-            dest_fqdn,
-            fqdn.0.unwrap_or("None".to_owned()),
-            fqdn.1.unwrap_or("None".to_owned())
-        );
-    } else {
+}
+
+async fn dns_task(dns_ip: &str, dest_fqdn: &str) -> Option<String> {
+    if dns_ip != String::new() {
+        trace!("Attempting to resolve DNS Server {}", dns_ip);
+        let Ok(stream) = TcpStream::connect(dns_ip) else {
+            warn!("Failed to resolve to DNS Server {}!", dns_ip);
+            return None;
+        };
+        info!("Connected to {}", dns_ip);
+        debug!("Attempting to resolve {}", dest_fqdn);
+        let dest_ip = dns_resolve(&stream, dest_fqdn, "", dns_ip);
         info!(
-            "Both DNS Server and DNS Cacher resolved {} to {}.",
+            "Resolved {} to {}!",
             dest_fqdn,
-            fqdn.0.unwrap_or_default()
+            dest_ip.clone().unwrap_or_default()
         );
+        if dest_ip != Some(String::new()) {
+            return dest_ip;
+        }
     }
+    None
 }
 
 fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) -> Option<String> {
@@ -219,6 +235,28 @@ fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) 
     None
 }
 
+async fn cache_task(cacher_ip: &str, dest_fqdn: &str) -> Option<String> {
+    if cacher_ip != String::new() {
+        trace!("Contacting DNS Cacher {}", cacher_ip);
+        let Ok(stream) = TcpStream::connect(cacher_ip) else {
+            warn!("Failed to contact DNS Cacher {}!", cacher_ip);
+            return None;
+        };
+        info!("Connected to {}", cacher_ip);
+        debug!("Locating {}", dest_fqdn);
+        let dest_ip = cache_resolve(&stream, dest_fqdn, cacher_ip);
+        info!(
+            "Resolved {} to {}!",
+            dest_fqdn,
+            dest_ip.clone().unwrap_or_default()
+        );
+        if dest_ip != Some(String::new()) {
+            return dest_ip;
+        }
+    }
+    None
+}
+
 fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<String> {
     let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
     payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
@@ -266,6 +304,21 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
         }
     }
     None
+}
+
+fn get_data(_loc: &str) -> String {
+    String::new()
+}
+
+async fn compare_results(
+    complete: String,
+    future: futures::future::Fuse<task::JoinHandle<Option<String>>>,
+    _cache_completed: bool,
+) {
+    let result = future.await;
+    if result.is_some() && result.unwrap() != complete {
+        error!("DNS Server and DNS Cacher returned different results!");
+    }
 }
 
 fn decode_error(response: &[u8; 4]) {
