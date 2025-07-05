@@ -14,26 +14,27 @@ async fn main() {
     let mut cacher_ip = String::from(CACHER_IP);
     let mut verbose_level = 0u8;
     let mut dest_fqdn = String::new();
+    let mut data_saver = false;
     let args: Vec<String> = env::args().collect();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
-                "verbose" => verbose_level += 1,
-                "dns-provider" => dns_ip = args[i + 1].clone(),
+                "data-saver" => data_saver = true,
                 "dns-cacher" => cacher_ip = args[i + 1].clone(),
+                "dns-provider" => dns_ip = args[i + 1].clone(),
                 "resolve" => dest_fqdn = args[i + 1].clone(),
+                "verbose" => verbose_level += 1,
                 _ => panic!("Pre-init failure; unknown long-name argument: {}", arg),
             }
         } else if arg.starts_with("-") {
             let mut argindex = i;
             for char in arg.strip_prefix("-").unwrap_or_default().chars() {
                 match char {
-                    'v' => verbose_level += 1,
-                    'd' => {
+                    'c' => {
                         dns_ip = args[argindex + 1].clone();
                         argindex += 1;
                     }
-                    'c' => {
+                    'd' => {
                         dns_ip = args[argindex + 1].clone();
                         argindex += 1;
                     }
@@ -41,6 +42,8 @@ async fn main() {
                         dest_fqdn = args[argindex + 1].clone();
                         argindex += 1;
                     }
+                    's' => data_saver = true,
+                    'v' => verbose_level += 1,
                     _ => panic!("Pre-init failure; unknown short-name argument: {}", arg),
                 }
             }
@@ -64,19 +67,19 @@ async fn main() {
     let mut dns_handle =
         task::spawn(async move { dns_task(&dns_ip, &dest_fqdn_clone).await }).fuse();
     let mut comparison = None;
-    let data: String = select! {
+    let data = select! {
         result = cache_handle => {
-            let mut return_data = String::new();
+            let mut return_data = None;
             if result.is_some() {
                 info!("Cache handle returned first");
-                return_data = get_data(&result.clone().unwrap());
+                return_data = get_data(&result.clone().unwrap(), data_saver).await;
                 comparison = Some(task::spawn(compare_results(result.unwrap(), dns_handle, true)));
             }
             else {
                 warn!("Cache handle returned None! Fallback to DNS handle.");
                 let dns_res = dns_handle.await;
                 if dns_res.is_some() {
-                    return_data = get_data(&dns_res.clone().unwrap());
+                    return_data = get_data(&dns_res.clone().unwrap(), data_saver).await;
                 }
                 else {
                     warn!("Unable to resolve {}!", dest_fqdn);
@@ -85,17 +88,17 @@ async fn main() {
             return_data
         }
         result = dns_handle => {
-            let mut return_data = String::new();
+            let mut return_data = None;
             if result.is_some() {
                 info!("DNS handle returned first");
-                return_data = get_data(&result.clone().unwrap());
+                return_data = get_data(&result.clone().unwrap(), data_saver).await;
                 comparison = Some(task::spawn(compare_results(result.unwrap(), cache_handle, false)));
             }
             else {
                 warn!("DNS handle returned None! Fallback to cache handle.");
                 let cache_res = cache_handle.await;
                 if cache_res.is_some() {
-                    return_data = get_data(&cache_res.clone().unwrap());
+                    return_data = get_data(&cache_res.clone().unwrap(), data_saver).await;
                 }
                 else {
                     warn!("Unable to resolve {}!", dest_fqdn);
@@ -104,7 +107,31 @@ async fn main() {
             return_data
         }
     };
-    println!("{}", data);
+    if data.is_some() {
+        let response = data.unwrap();
+        match response.len().cmp(&4) {
+            Ordering::Less => {
+                error!("Server send an invalid response.");
+                return;
+            }
+            Ordering::Equal => {
+                decode_error(&response.try_into().unwrap_or_default());
+                return;
+            }
+            _ => {}
+        }
+        match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
+            200 => {
+                // 200: Server OK / Success
+                let plaintext = String::from_utf8_lossy(&response[4..]);
+                println!("{}", plaintext);
+            }
+            999 => {
+                //this will never happen, just want clippy to shut the fuck up
+            }
+            _ => {}
+        }
+    }
     if comparison.is_some() {
         comparison.unwrap().await;
     }
@@ -306,8 +333,19 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
     None
 }
 
-fn get_data(_loc: &str) -> String {
-    String::new()
+async fn get_data(loc: &str, datasave: bool) -> Option<Vec<u8>> {
+    let Ok(stream) = TcpStream::connect(loc) else {
+        error!("Failed to connect to {}!", loc);
+        return None;
+    };
+    let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
+    payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
+    if datasave {
+        payload.extend_from_slice("index.md".as_bytes());
+        send_data(&payload, &stream);
+        return Some(receive_data(&stream));
+    }
+    None
 }
 
 async fn compare_results(

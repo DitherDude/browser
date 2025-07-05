@@ -146,7 +146,7 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
     }
     let path = Path::new(location.as_ref());
     let path = Path::new(&directory).join(path);
-    if !path.is_dir().await {
+    if !path.is_file().await {
         send_error(&stream, 404);
         return;
     }
