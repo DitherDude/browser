@@ -115,21 +115,22 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         }
     };
     let data = receive_data(&stream);
-    let request = String::from_utf8_lossy(&data[8..]);
+    if data.len() < 13 {
+        warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
+        send_error(&stream, 402);
+        return;
+    }
+    let request = String::from_utf8_lossy(&data[12..]);
     info!(
         "Connection from {}:{} requesting {}.",
         peer.ip(),
         peer.port(),
         request
     );
-    if data.len() < 9 {
-        warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-        send_error(&stream, 402);
-        return;
-    }
     let client_maj = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0, 0, 0, 0]));
     let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0, 0, 0, 0]));
-    match version_compare((client_maj, client_min), peer, PTCL_VER) {
+    let client_tiny = u32::from_le_bytes(data[8..12].try_into().unwrap_or([0, 0, 0, 0]));
+    match version_compare((client_maj, client_min, client_tiny), peer, PTCL_VER) {
         Ordering::Greater => send_error(&stream, 427),
         Ordering::Less => send_error(&stream, 426),
         _ => (),

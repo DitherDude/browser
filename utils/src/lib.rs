@@ -77,32 +77,75 @@ pub fn send_error(stream: &TcpStream, err: i32) {
 }
 
 pub fn version_compare(
-    client: (u32, u32),
+    client: (u32, u32, u32),
     peer: std::net::SocketAddr,
     ptcl_ver: (u32, u32, u32),
 ) -> Ordering {
-    if client.0 > ptcl_ver.0 {
-        warn!(
-            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-            peer.ip(),
-            peer.port(),
-            client.0,
-            client.1,
-            ptcl_ver.0,
-            ptcl_ver.1
-        );
-        return Ordering::Greater;
-    } else if client.0 < ptcl_ver.0 || (client.0 == ptcl_ver.0 && client.1 < ptcl_ver.1) {
-        warn!(
-            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-            peer.ip(),
-            peer.port(),
-            client.0,
-            client.1,
-            ptcl_ver.0,
-            ptcl_ver.1
-        );
-        return Ordering::Less;
+    match client.0.cmp(&ptcl_ver.0) {
+        Ordering::Greater => {
+            warn!(
+                "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+                peer.ip(),
+                peer.port(),
+                client.0,
+                client.1,
+                ptcl_ver.0,
+                ptcl_ver.1
+            );
+            return Ordering::Greater;
+        }
+        Ordering::Less => {
+            warn!(
+                "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+                peer.ip(),
+                peer.port(),
+                client.0,
+                client.1,
+                ptcl_ver.0,
+                ptcl_ver.1
+            );
+            return Ordering::Less;
+        }
+        _ => match client.1.cmp(&ptcl_ver.1) {
+            Ordering::Greater => {
+                warn!(
+                    "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+                    peer.ip(),
+                    peer.port(),
+                    client.0,
+                    client.1,
+                    ptcl_ver.0,
+                    ptcl_ver.1
+                );
+                return Ordering::Greater;
+            }
+            Ordering::Less => {
+                warn!(
+                    "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+                    peer.ip(),
+                    peer.port(),
+                    client.0,
+                    client.1,
+                    ptcl_ver.0,
+                    ptcl_ver.1
+                );
+                return Ordering::Less;
+            }
+            _ => {
+                if client.2.cmp(&ptcl_ver.2) == Ordering::Less {
+                    warn!(
+                        "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+                        peer.ip(),
+                        peer.port(),
+                        client.0,
+                        client.1,
+                        ptcl_ver.0,
+                        ptcl_ver.1
+                    );
+                    return Ordering::Less;
+                }
+            }
+        },
     }
     Ordering::Equal
 }

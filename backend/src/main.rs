@@ -13,16 +13,16 @@ async fn main() {
     let mut dns_ip = String::from(DNS_IP);
     let mut cacher_ip = String::from(CACHER_IP);
     let mut verbose_level = 0u8;
-    let mut dest_fqdn = String::new();
-    let mut data_saver = false;
+    let mut dest_addr = String::new();
+    let mut stacks = "MRKDN".to_string();
     let args: Vec<String> = env::args().collect();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
-                "data-saver" => data_saver = true,
                 "dns-cacher" => cacher_ip = args[i + 1].clone(),
                 "dns-provider" => dns_ip = args[i + 1].clone(),
-                "resolve" => dest_fqdn = args[i + 1].clone(),
+                "resolve" => dest_addr = args[i + 1].clone(),
+                "stacks" => stacks = args[i + 1].clone(),
                 "verbose" => verbose_level += 1,
                 _ => panic!("Pre-init failure; unknown long-name argument: {}", arg),
             }
@@ -39,10 +39,13 @@ async fn main() {
                         argindex += 1;
                     }
                     'r' => {
-                        dest_fqdn = args[argindex + 1].clone();
+                        dest_addr = args[argindex + 1].clone();
                         argindex += 1;
                     }
-                    's' => data_saver = true,
+                    's' => {
+                        stacks = args[argindex + 1].clone();
+                        argindex += 1;
+                    }
                     'v' => verbose_level += 1,
                     _ => panic!("Pre-init failure; unknown short-name argument: {}", arg),
                 }
@@ -60,29 +63,37 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
         tracing_subscriber::fmt().init();
     });
-    let dest_fqdn_clone = dest_fqdn.clone();
+    if stacks.len() % 5 != 0 {
+        error!("Each stack name must be five characters long.");
+        return;
+    }
+    if stacks.chars().any(|c| !c.is_alphanumeric()) {
+        error!("Each stack name must be alphanumeric.");
+        return;
+    }
+    let dest_addr_clone = dest_addr.clone();
     let mut cache_handle =
-        task::spawn(async move { cache_task(&cacher_ip, &dest_fqdn_clone).await }).fuse();
-    let dest_fqdn_clone = dest_fqdn.clone();
+        task::spawn(async move { cache_task(&cacher_ip, &dest_addr_clone).await }).fuse();
+    let dest_addr_clone = dest_addr.clone();
     let mut dns_handle =
-        task::spawn(async move { dns_task(&dns_ip, &dest_fqdn_clone).await }).fuse();
+        task::spawn(async move { dns_task(&dns_ip, &dest_addr_clone).await }).fuse();
     let mut comparison = None;
     let data = select! {
         result = cache_handle => {
             let mut return_data = None;
             if result.is_some() {
                 info!("Cache handle returned first");
-                return_data = get_data(&result.clone().unwrap(), data_saver).await;
-                comparison = Some(task::spawn(compare_results(result.unwrap(), dns_handle, true)));
+                return_data = get_data(result.clone().unwrap(), &stacks).await;
+                comparison = Some(task::spawn(compare_results(result.unwrap().0, dns_handle)));
             }
             else {
                 warn!("Cache handle returned None! Fallback to DNS handle.");
                 let dns_res = dns_handle.await;
                 if dns_res.is_some() {
-                    return_data = get_data(&dns_res.clone().unwrap(), data_saver).await;
+                    return_data = get_data(dns_res.clone().unwrap(), &stacks).await;
                 }
                 else {
-                    warn!("Unable to resolve {}!", dest_fqdn);
+                    warn!("Unable to resolve {}!", dest_addr);
                 }
             }
             return_data
@@ -91,17 +102,17 @@ async fn main() {
             let mut return_data = None;
             if result.is_some() {
                 info!("DNS handle returned first");
-                return_data = get_data(&result.clone().unwrap(), data_saver).await;
-                comparison = Some(task::spawn(compare_results(result.unwrap(), cache_handle, false)));
+                return_data = get_data(result.clone().unwrap(), &stacks).await;
+                comparison = Some(task::spawn(compare_results(result.unwrap().0, cache_handle)));
             }
             else {
                 warn!("DNS handle returned None! Fallback to cache handle.");
                 let cache_res = cache_handle.await;
                 if cache_res.is_some() {
-                    return_data = get_data(&cache_res.clone().unwrap(), data_saver).await;
+                    return_data = get_data(cache_res.clone().unwrap(), &stacks).await;
                 }
                 else {
-                    warn!("Unable to resolve {}!", dest_fqdn);
+                    warn!("Unable to resolve {}!", dest_addr);
                 }
             }
             return_data
@@ -109,35 +120,21 @@ async fn main() {
     };
     if data.is_some() {
         let response = data.unwrap();
-        match response.len().cmp(&4) {
-            Ordering::Less => {
-                error!("Server send an invalid response.");
-                return;
-            }
-            Ordering::Equal => {
-                decode_error(&response.try_into().unwrap_or_default());
-                return;
-            }
-            _ => {}
-        }
-        match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-            200 => {
-                // 200: Server OK / Success
-                let plaintext = String::from_utf8_lossy(&response[4..]);
-                println!("{}", plaintext);
-            }
-            999 => {
-                //this will never happen, just want clippy to shut the fuck up
-            }
-            _ => {}
-        }
+        println!("{}", String::from_utf8_lossy(&response));
     }
     if comparison.is_some() {
         comparison.unwrap().await;
     }
 }
 
-async fn dns_task(dns_ip: &str, dest_fqdn: &str) -> Option<String> {
+fn address_splitter(address: &str) -> (String, String) {
+    let addr = address.strip_prefix("web://").unwrap_or(address);
+    let (fqdn, endpoint) = addr.split_once('/').unwrap_or((addr, ""));
+    (fqdn.to_string(), endpoint.to_string())
+}
+
+async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<(String, String)> {
+    let (dest_fqdn, dest_endpoint) = address_splitter(dest_addr);
     if dns_ip != String::new() {
         trace!("Attempting to resolve DNS Server {}", dns_ip);
         let Ok(stream) = TcpStream::connect(dns_ip) else {
@@ -146,14 +143,18 @@ async fn dns_task(dns_ip: &str, dest_fqdn: &str) -> Option<String> {
         };
         info!("Connected to {}", dns_ip);
         debug!("Attempting to resolve {}", dest_fqdn);
-        let dest_ip = dns_resolve(&stream, dest_fqdn, "", dns_ip);
+        let dest_ip = dns_resolve(&stream, &dest_fqdn, "", dns_ip);
         info!(
             "Resolved {} to {}!",
             dest_fqdn,
             dest_ip.clone().unwrap_or_default()
         );
-        if dest_ip != Some(String::new()) {
-            return dest_ip;
+        if let Some(dest_ip) = dest_ip {
+            return if dest_ip == String::new() {
+                None
+            } else {
+                Some((dest_ip, dest_endpoint))
+            };
         }
     }
     None
@@ -165,6 +166,7 @@ fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) 
     let is_last_block = block == destination;
     let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
     payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
+    payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
     payload.extend_from_slice(if is_last_block { &[0u8] } else { &[1u8] });
     payload.extend_from_slice(block.as_bytes());
     send_data(&payload, stream);
@@ -262,7 +264,8 @@ fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) 
     None
 }
 
-async fn cache_task(cacher_ip: &str, dest_fqdn: &str) -> Option<String> {
+async fn cache_task(cacher_ip: &str, dest_addr: &str) -> Option<(String, String)> {
+    let (dest_fqdn, dest_endpoint) = address_splitter(dest_addr);
     if cacher_ip != String::new() {
         trace!("Contacting DNS Cacher {}", cacher_ip);
         let Ok(stream) = TcpStream::connect(cacher_ip) else {
@@ -271,14 +274,18 @@ async fn cache_task(cacher_ip: &str, dest_fqdn: &str) -> Option<String> {
         };
         info!("Connected to {}", cacher_ip);
         debug!("Locating {}", dest_fqdn);
-        let dest_ip = cache_resolve(&stream, dest_fqdn, cacher_ip);
+        let dest_ip = cache_resolve(&stream, &dest_fqdn, cacher_ip);
         info!(
             "Resolved {} to {}!",
             dest_fqdn,
             dest_ip.clone().unwrap_or_default()
         );
-        if dest_ip != Some(String::new()) {
-            return dest_ip;
+        if let Some(dest_ip) = dest_ip {
+            return if dest_ip == String::new() {
+                None
+            } else {
+                Some((dest_ip, dest_endpoint))
+            };
         }
     }
     None
@@ -287,6 +294,7 @@ async fn cache_task(cacher_ip: &str, dest_fqdn: &str) -> Option<String> {
 fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<String> {
     let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
     payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
+    payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
     payload.extend_from_slice(destination.as_bytes());
     send_data(&payload, stream);
     let response = receive_data(stream);
@@ -333,38 +341,70 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
     None
 }
 
-async fn get_data(loc: &str, datasave: bool) -> Option<Vec<u8>> {
-    let Ok(stream) = TcpStream::connect(loc) else {
-        error!("Failed to connect to {}!", loc);
+async fn get_data(address: (String, String), stacks: &str) -> Option<Vec<u8>> {
+    let Ok(stream) = TcpStream::connect(&address.0) else {
+        error!("Failed to connect to {}!", &address.0);
         return None;
     };
     let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
     payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
-    if datasave {
-        payload.extend_from_slice("index.md".as_bytes());
-        send_data(&payload, &stream);
-        return Some(receive_data(&stream));
+    payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
+    payload.extend_from_slice(stacks.as_bytes());
+    payload.extend_from_slice("/".as_bytes());
+    payload.extend_from_slice(address.1.as_bytes());
+    send_data(&payload, &stream);
+    let response = receive_data(&stream);
+    match response.len() {
+        4 => {
+            decode_error(&response.try_into().unwrap_or_default());
+        }
+        0..9 => {
+            error!("Server send an invalid response.");
+            return None;
+        }
+        _ => {
+            match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
+                200 => {
+                    // 200: Server OK / Success
+                    println!(
+                        "Server responsed with protocol {}",
+                        String::from_utf8_lossy(&response[4..9])
+                    );
+                    return Some(response[9..].to_vec());
+                }
+                100 => {
+                    // Handle extra blocks here
+                }
+                _ => {
+                    error!("Server send an invalid response.");
+                    return None;
+                }
+            }
+        }
     }
+    // Some(receive_data(&stream))
     None
 }
 
 async fn compare_results(
     complete: String,
-    future: futures::future::Fuse<task::JoinHandle<Option<String>>>,
-    _cache_completed: bool,
+    future: futures::future::Fuse<task::JoinHandle<Option<(String, String)>>>,
 ) {
     let result = future.await;
-    if result.is_some() && result.unwrap() != complete {
+    if result.is_some() && result.unwrap().0 != complete {
         error!("DNS Server and DNS Cacher returned different results!");
+        //report to DNS cacher that its information is outdated
     }
 }
 
 fn decode_error(response: &[u8; 4]) {
     match u32::from_le_bytes(*response) {
+        000 => error!("[TESTING] Not implemented."),
         400 => error!("Bad request."),
         402 => error!("Payload too small."),
         403 => error!("Forbidden action."),
         404 => error!("Resource not found."),
+        422 => error!("Unprocessable request."),
         426 => error!("Upgrade required."),
         427 => error!("Downgrade required."),
         501 => error!("Operation not implemented."),

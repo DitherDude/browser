@@ -1,5 +1,4 @@
 use async_std::path::Path;
-use shlex::try_quote;
 use std::{
     cmp::Ordering,
     env,
@@ -12,7 +11,7 @@ use utils::{receive_data, send_data, send_error, version_compare};
 
 const DEFAULT_PORT: u16 = 6204;
 const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
-
+const SERVER_PTCLS: [&[u8; 5]; 4] = [b"HTML!", b"MRKDN", b"CRAWL", b"RWDTA"];
 #[async_std::main]
 async fn main() {
     let mut verbose_level = 0u8;
@@ -119,39 +118,131 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
         }
     };
     let data = receive_data(&stream);
-    if data.len() < 10 {
+    if data.len() < 14 {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
         send_error(&stream, 402);
         return;
     }
     let client_maj = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0, 0, 0, 0]));
     let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0, 0, 0, 0]));
-    match version_compare((client_maj, client_min), peer, PTCL_VER) {
+    let client_tiny = u32::from_le_bytes(data[8..12].try_into().unwrap_or([0, 0, 0, 0]));
+    match version_compare((client_maj, client_min, client_tiny), peer, PTCL_VER) {
         Ordering::Greater => send_error(&stream, 427),
         Ordering::Less => send_error(&stream, 426),
         _ => (),
     }
-    let data = &data[8..];
+    let mut data = &data[12..];
     if data.is_empty() {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
         send_error(&stream, 402);
         return;
     }
-    let loc_str = String::from_utf8_lossy(&data[0..]);
-    let location = try_quote(&loc_str).unwrap_or_default();
-    if location.is_empty() {
-        warn!("Malfuntion with client location request. Possibly disallowed location");
-        send_error(&stream, 403);
+    let mut client_protocols = vec![[0u8; 5]];
+    loop {
+        if data.len() < 5 {
+            warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
+            send_error(&stream, 402);
+            return;
+        }
+        client_protocols.push(data[0..5].try_into().unwrap_or([0u8; 5]));
+        data = &data[5..];
+        if data[0] == b'/' {
+            data = data.get(1..).unwrap_or_default();
+            break;
+        }
+    }
+    let mut using_protocol = None;
+    for protocol in client_protocols {
+        if SERVER_PTCLS.contains(&&protocol) {
+            using_protocol = Some(protocol);
+            break;
+        }
+    }
+    if using_protocol.is_none() {
+        send_error(&stream, 422);
         return;
     }
-    let path = Path::new(location.as_ref());
+    let using_protocol = using_protocol.unwrap();
+    let location = String::from_utf8_lossy(&data[0..]);
+    let protocol = using_protocol;
+    if &protocol == SERVER_PTCLS[0] {
+        html_content(&stream, &location, directory).await;
+    } else if &protocol == SERVER_PTCLS[1] {
+        markdown_content(&stream, &location, directory).await;
+    } else if &protocol == SERVER_PTCLS[2] {
+        crawl_content(&stream, &location, directory).await;
+    } else if &protocol == SERVER_PTCLS[3] {
+        raw_data_content(&stream, &location, directory).await;
+    } else {
+        error!("This path is unreachable!");
+    };
+}
+
+async fn html_content(stream: &TcpStream, _destination: &str, _directory: &str) {
+    send_data(&0u32.to_le_bytes(), stream);
+}
+async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str) {
+    let path = Path::new(destination);
     let path = Path::new(&directory).join(path);
-    if !path.is_file().await {
-        send_error(&stream, 404);
+    if !pathcheck(&path, Path::new(directory)).await {
+        send_error(stream, 403);
         return;
     }
-    debug!("Client requested dump for path: {}", &location);
+    if !path.is_dir().await {
+        send_error(stream, 404);
+        return;
+    }
+    let content = path.join("index.md");
+    if !content.is_file().await {
+        send_error(stream, 404);
+        return;
+    }
+    debug!(
+        "Client requested markdown content for path: {}",
+        &destination
+    );
     let mut payload = 200u32.to_le_bytes().to_vec();
+    payload.extend_from_slice(SERVER_PTCLS[1]);
+    let filedump = File::open(&content);
+    match filedump {
+        Ok(mut file) => {
+            let mut buffer = Vec::new();
+            match file.read_to_end(&mut buffer) {
+                Ok(_) => {
+                    payload.extend_from_slice(&buffer);
+                }
+                Err(e) => {
+                    warn!("Failed to read file: {}", e);
+                    send_error(stream, 404);
+                    return;
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to open file: {}", e);
+            send_error(stream, 404);
+            return;
+        }
+    }
+    send_data(&payload, stream);
+}
+async fn crawl_content(stream: &TcpStream, _destination: &str, _directory: &str) {
+    send_data(&0u32.to_le_bytes(), stream);
+}
+async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
+    let path = Path::new(content);
+    let path = Path::new(&directory).join(path);
+    if !pathcheck(&path, Path::new(directory)).await {
+        send_error(stream, 403);
+        return;
+    }
+    if !path.is_file().await {
+        send_error(stream, 404);
+        return;
+    }
+    debug!("Client requested file dump for file: {}", &content);
+    let mut payload = 200u32.to_le_bytes().to_vec();
+    payload.extend_from_slice(SERVER_PTCLS[1]);
     let filedump = File::open(&path);
     match filedump {
         Ok(mut file) => {
@@ -162,16 +253,28 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
                 }
                 Err(e) => {
                     warn!("Failed to read file: {}", e);
-                    send_error(&stream, 404);
+                    send_error(stream, 404);
                     return;
                 }
             }
         }
         Err(e) => {
             warn!("Failed to open file: {}", e);
-            send_error(&stream, 404);
+            send_error(stream, 404);
             return;
         }
     }
-    send_data(&payload, &stream);
+    send_data(&payload, stream);
+}
+
+async fn pathcheck(newpath: &Path, origpath: &Path) -> bool {
+    let newpath = newpath
+        .canonicalize()
+        .await
+        .unwrap_or_else(|_| newpath.to_path_buf());
+    let origpath = origpath
+        .canonicalize()
+        .await
+        .unwrap_or_else(|_| origpath.to_path_buf());
+    newpath.starts_with(&origpath)
 }
