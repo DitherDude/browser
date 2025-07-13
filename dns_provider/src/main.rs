@@ -77,7 +77,7 @@ async fn main() {
             return;
         }
     }
-    let listener = match TcpListener::bind("127.0.0.1:".to_owned() + &port.to_string()) {
+    let listener = match TcpListener::bind("0.0.0.0:".to_owned() + &port.to_string()) {
         Ok(listener) => listener,
         Err(e) => {
             error!("Port is unavailable: {}", e);

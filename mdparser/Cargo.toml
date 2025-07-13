@@ -1,0 +1,14 @@
+[package]
+name = "mdparser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gtk.workspace = true
+pango.workspace = true
+regex.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lib]
+crate-type = ["dylib", "rlib"]

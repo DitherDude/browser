@@ -4,6 +4,8 @@ use std::{cmp::Ordering, env, net::TcpStream};
 use tracing::{Level, debug, error, info, trace, warn};
 use utils::{receive_data, send_data};
 
+extern crate mdparser;
+
 const DNS_IP: &str = "0.0.0.0:6202";
 const CACHER_IP: &str = "0.0.0.0:6203";
 const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
@@ -31,7 +33,7 @@ async fn main() {
             for char in arg.strip_prefix("-").unwrap_or_default().chars() {
                 match char {
                     'c' => {
-                        dns_ip = args[argindex + 1].clone();
+                        cacher_ip = args[argindex + 1].clone();
                         argindex += 1;
                     }
                     'd' => {
@@ -121,6 +123,7 @@ async fn main() {
     if data.is_some() {
         let response = data.unwrap();
         println!("{}", String::from_utf8_lossy(&response));
+        mdparser::test();
     }
     if comparison.is_some() {
         comparison.unwrap().await;
