@@ -25,7 +25,13 @@ pub fn receive_data(mut stream: &TcpStream) -> Vec<u8> {
         trace!("Expecting {len} bytes...");
         let start = data.len();
         data.extend(std::iter::repeat_n(0, len as usize));
-        stream.read_exact(&mut data[start..]).unwrap();
+        match stream.read_exact(&mut data[start..]) {
+            Ok(_) => {}
+            Err(e) => {
+                trace!("Failed to read block: {}", e);
+                return data;
+            }
+        };
         trace!("Received block of size {}.", data.len() - start);
         if len != u16::MAX {
             break;
@@ -106,8 +112,8 @@ pub fn version_compare(
             );
             return Ordering::Less;
         }
-        _ => match client.1.cmp(&ptcl_ver.1) {
-            Ordering::Greater => {
+        _ => {
+            if client.1.cmp(&ptcl_ver.1) == Ordering::Greater {
                 warn!(
                     "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
                     peer.ip(),
@@ -119,33 +125,7 @@ pub fn version_compare(
                 );
                 return Ordering::Greater;
             }
-            Ordering::Less => {
-                warn!(
-                    "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                    peer.ip(),
-                    peer.port(),
-                    client.0,
-                    client.1,
-                    ptcl_ver.0,
-                    ptcl_ver.1
-                );
-                return Ordering::Less;
-            }
-            _ => {
-                if client.2.cmp(&ptcl_ver.2) == Ordering::Less {
-                    warn!(
-                        "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                        peer.ip(),
-                        peer.port(),
-                        client.0,
-                        client.1,
-                        ptcl_ver.0,
-                        ptcl_ver.1
-                    );
-                    return Ordering::Less;
-                }
-            }
-        },
+        }
     }
     Ordering::Equal
 }

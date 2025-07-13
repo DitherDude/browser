@@ -24,7 +24,7 @@ async fn main() {
                 "directory" => pwd = args[i + 1].clone(),
                 "port" => portstr = args[i + 1].clone(),
                 "verbose" => verbose_level += 1,
-                _ => panic!("Pre-init failure; unknown long-name argument: {}", arg),
+                _ => panic!("Pre-init failure; unknown long-name argument: {arg}"),
             }
         } else if arg.starts_with("-") {
             let mut argindex = i;
@@ -39,7 +39,7 @@ async fn main() {
                         argindex += 1;
                     }
                     'v' => verbose_level += 1,
-                    _ => panic!("Pre-init failure; unknown short-name argument: {}", arg),
+                    _ => panic!("Pre-init failure; unknown short-name argument: {arg}"),
                 }
             }
         }
