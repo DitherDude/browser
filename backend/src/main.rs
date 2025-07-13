@@ -31,7 +31,7 @@ async fn main() {
             for char in arg.strip_prefix("-").unwrap_or_default().chars() {
                 match char {
                     'c' => {
-                        dns_ip = args[argindex + 1].clone();
+                        cacher_ip = args[argindex + 1].clone();
                         argindex += 1;
                     }
                     'd' => {
