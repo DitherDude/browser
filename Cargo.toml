@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "backend",
+    "url_resolver",
     "dns_cacher",
     "dns_provider",
     "frontend",

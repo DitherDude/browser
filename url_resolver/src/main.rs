@@ -16,15 +16,17 @@ async fn main() {
     let mut cacher_ip = String::from(CACHER_IP);
     let mut verbose_level = 0u8;
     let mut dest_addr = String::new();
-    let mut stacks = "MRKDN".to_string();
+    let mut integrity_check = false;
+    // let mut stacks = "MRKDN".to_string();
     let args: Vec<String> = env::args().collect();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
                 "dns-cacher" => cacher_ip = args[i + 1].clone(),
                 "dns-provider" => dns_ip = args[i + 1].clone(),
+                "integrity-check" => integrity_check = true,
                 "resolve" => dest_addr = args[i + 1].clone(),
-                "stacks" => stacks = args[i + 1].clone(),
+                // "stacks" => stacks = args[i + 1].clone(),
                 "verbose" => verbose_level += 1,
                 _ => panic!("Pre-init failure; unknown long-name argument: {arg}"),
             }
@@ -40,14 +42,15 @@ async fn main() {
                         dns_ip = args[argindex + 1].clone();
                         argindex += 1;
                     }
+                    'i' => integrity_check = true,
                     'r' => {
                         dest_addr = args[argindex + 1].clone();
                         argindex += 1;
                     }
-                    's' => {
-                        stacks = args[argindex + 1].clone();
-                        argindex += 1;
-                    }
+                    // 's' => {
+                    //     stacks = args[argindex + 1].clone();
+                    //     argindex += 1;
+                    // }
                     'v' => verbose_level += 1,
                     _ => panic!("Pre-init failure; unknown short-name argument: {arg}"),
                 }
@@ -65,14 +68,14 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
         tracing_subscriber::fmt().init();
     });
-    if stacks.len() % 5 != 0 {
-        error!("Each stack name must be five characters long.");
-        return;
-    }
-    if stacks.chars().any(|c| !c.is_alphanumeric()) {
-        error!("Each stack name must be alphanumeric.");
-        return;
-    }
+    // if stacks.len() % 5 != 0 {
+    //     error!("Each stack name must be five characters long.");
+    //     return;
+    // }
+    // if stacks.chars().any(|c| !c.is_alphanumeric()) {
+    //     error!("Each stack name must be alphanumeric.");
+    //     return;
+    // }
     let dest_addr_clone = dest_addr.clone();
     let mut cache_handle =
         task::spawn(async move { cache_task(&cacher_ip, &dest_addr_clone).await }).fuse();
@@ -85,14 +88,16 @@ async fn main() {
             let mut return_data = None;
             if result.is_some() {
                 info!("Cache handle returned first");
-                return_data = get_data(result.clone().unwrap(), &stacks).await;
-                comparison = Some(task::spawn(compare_results(result.unwrap().0, dns_handle)));
+                return_data = result.clone();
+                // return_data = get_data(result.clone().unwrap(), &stacks).await;
+                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap().0, dns_handle)));}
             }
             else {
                 warn!("Cache handle returned None! Fallback to DNS handle.");
                 let dns_res = dns_handle.await;
                 if dns_res.is_some() {
-                    return_data = get_data(dns_res.clone().unwrap(), &stacks).await;
+                    return_data = dns_res;
+                    // return_data = get_data(dns_res.clone().unwrap(), &stacks).await;
                 }
                 else {
                     warn!("Unable to resolve {}!", dest_addr);
@@ -104,14 +109,16 @@ async fn main() {
             let mut return_data = None;
             if result.is_some() {
                 info!("DNS handle returned first");
-                return_data = get_data(result.clone().unwrap(), &stacks).await;
-                comparison = Some(task::spawn(compare_results(result.unwrap().0, cache_handle)));
+                return_data = result.clone();
+                // return_data = get_data(result.clone().unwrap(), &stacks).await;
+                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap().0, cache_handle)));}
             }
             else {
                 warn!("DNS handle returned None! Fallback to cache handle.");
                 let cache_res = cache_handle.await;
                 if cache_res.is_some() {
-                    return_data = get_data(cache_res.clone().unwrap(), &stacks).await;
+                    return_data = cache_res;
+                    // return_data = get_data(cache_res.clone().unwrap(), &stacks).await;
                 }
                 else {
                     warn!("Unable to resolve {}!", dest_addr);
@@ -122,10 +129,11 @@ async fn main() {
     };
     if data.is_some() {
         let response = data.unwrap();
-        println!("{}", String::from_utf8_lossy(&response));
-        mdparser::test();
+        println!("{}/{}", response.0, response.1);
+    } else {
+        println!("Failure");
     }
-    if comparison.is_some() {
+    if comparison.is_some() && integrity_check {
         comparison.unwrap().await;
     }
 }
@@ -344,50 +352,50 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
     None
 }
 
-async fn get_data(address: (String, String), stacks: &str) -> Option<Vec<u8>> {
-    let Ok(stream) = TcpStream::connect(&address.0) else {
-        error!("Failed to connect to {}!", &address.0);
-        return None;
-    };
-    let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
-    payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
-    payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
-    payload.extend_from_slice(stacks.as_bytes());
-    payload.extend_from_slice("/".as_bytes());
-    payload.extend_from_slice(address.1.as_bytes());
-    send_data(&payload, &stream);
-    let response = receive_data(&stream);
-    match response.len() {
-        4 => {
-            decode_error(&response.try_into().unwrap_or_default());
-        }
-        0..9 => {
-            error!("Server send an invalid response.");
-            return None;
-        }
-        _ => {
-            match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-                200 => {
-                    // 200: Server OK / Success
-                    println!(
-                        "Server responsed with protocol {}",
-                        String::from_utf8_lossy(&response[4..9])
-                    );
-                    return Some(response[9..].to_vec());
-                }
-                100 => {
-                    // Handle extra blocks here
-                }
-                _ => {
-                    error!("Server send an invalid response.");
-                    return None;
-                }
-            }
-        }
-    }
-    // Some(receive_data(&stream))
-    None
-}
+// async fn get_data(address: (String, String), stacks: &str) -> Option<Vec<u8>> {
+//     let Ok(stream) = TcpStream::connect(&address.0) else {
+//         error!("Failed to connect to {}!", &address.0);
+//         return None;
+//     };
+//     let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
+//     payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
+//     payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
+//     payload.extend_from_slice(stacks.as_bytes());
+//     payload.extend_from_slice("/".as_bytes());
+//     payload.extend_from_slice(address.1.as_bytes());
+//     send_data(&payload, &stream);
+//     let response = receive_data(&stream);
+//     match response.len() {
+//         4 => {
+//             decode_error(&response.try_into().unwrap_or_default());
+//         }
+//         0..9 => {
+//             error!("Server send an invalid response.");
+//             return None;
+//         }
+//         _ => {
+//             match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
+//                 200 => {
+//                     // 200: Server OK / Success
+//                     println!(
+//                         "Server responsed with protocol {}",
+//                         String::from_utf8_lossy(&response[4..9])
+//                     );
+//                     return Some(response[9..].to_vec());
+//                 }
+//                 100 => {
+//                     // Handle extra blocks here
+//                 }
+//                 _ => {
+//                     error!("Server send an invalid response.");
+//                     return None;
+//                 }
+//             }
+//         }
+//     }
+//     // Some(receive_data(&stream))
+//     None
+// }
 
 async fn compare_results(
     complete: String,
@@ -413,8 +421,4 @@ fn decode_error(response: &[u8; 4]) {
         501 => error!("Operation not implemented."),
         _ => error!("Communication fault."),
     }
-}
-
-fn parser_fellthrough(parser: &str) {
-    println!("Parser {parser} is missing. Fallback code here.");
 }
