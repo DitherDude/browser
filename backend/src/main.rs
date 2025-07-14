@@ -414,3 +414,7 @@ fn decode_error(response: &[u8; 4]) {
         _ => error!("Communication fault."),
     }
 }
+
+fn parser_fellthrough(parser: &str) {
+    println!("Parser {parser} is missing. Fallback code here.");
+}

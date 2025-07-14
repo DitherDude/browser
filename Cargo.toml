@@ -5,7 +5,6 @@ members = [
     "dns_cacher",
     "dns_provider",
     "frontend",
-    "mdparser",
     "server",
     "utils",
 ]
