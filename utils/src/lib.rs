@@ -85,9 +85,9 @@ pub fn send_error(stream: &TcpStream, err: i32) {
 pub fn version_compare(
     client: (u32, u32, u32),
     peer: std::net::SocketAddr,
-    ptcl_ver: (u32, u32, u32),
+    ptcl_ver: Vec<u32>,
 ) -> Ordering {
-    match client.0.cmp(&ptcl_ver.0) {
+    match client.0.cmp(&ptcl_ver[0]) {
         Ordering::Greater => {
             warn!(
                 "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
@@ -95,8 +95,8 @@ pub fn version_compare(
                 peer.port(),
                 client.0,
                 client.1,
-                ptcl_ver.0,
-                ptcl_ver.1
+                ptcl_ver[0],
+                ptcl_ver[1]
             );
             return Ordering::Greater;
         }
@@ -107,21 +107,21 @@ pub fn version_compare(
                 peer.port(),
                 client.0,
                 client.1,
-                ptcl_ver.0,
-                ptcl_ver.1
+                ptcl_ver[0],
+                ptcl_ver[1]
             );
             return Ordering::Less;
         }
         _ => {
-            if client.1.cmp(&ptcl_ver.1) == Ordering::Greater {
+            if client.1.cmp(&ptcl_ver[1]) == Ordering::Greater {
                 warn!(
                     "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
                     peer.ip(),
                     peer.port(),
                     client.0,
                     client.1,
-                    ptcl_ver.0,
-                    ptcl_ver.1
+                    ptcl_ver[0],
+                    ptcl_ver[1]
                 );
                 return Ordering::Greater;
             }

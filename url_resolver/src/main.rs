@@ -8,10 +8,19 @@ extern crate mdparser;
 
 const DNS_IP: &str = "0.0.0.0:6202";
 const CACHER_IP: &str = "0.0.0.0:6203";
-const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
 
 #[async_std::main]
 async fn main() {
+    let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|f| match f.parse::<u32>() {
+            Ok(version) => version,
+            Err(e) => {
+                panic!("Failed to parse version: {e}");
+            }
+        })
+        .collect();
+    assert!(program_version.len() > 2);
     let mut dns_ip = String::from(DNS_IP);
     let mut cacher_ip = String::from(CACHER_IP);
     let mut verbose_level = 0u8;
@@ -175,9 +184,13 @@ fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) 
     let block = destination.split('.').next_back().unwrap_or_default();
     let next_prev = ".".to_owned() + block + prev;
     let is_last_block = block == destination;
-    let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
-    payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
-    payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
+    let version: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|f| f.parse::<u32>().unwrap())
+        .collect();
+    let mut payload = version[0].to_le_bytes().to_vec();
+    payload.extend_from_slice(&version[1].to_le_bytes());
+    payload.extend_from_slice(&version[2].to_le_bytes());
     payload.extend_from_slice(if is_last_block { &[0u8] } else { &[1u8] });
     payload.extend_from_slice(block.as_bytes());
     send_data(&payload, stream);
@@ -303,9 +316,13 @@ async fn cache_task(cacher_ip: &str, dest_addr: &str) -> Option<(String, String)
 }
 
 fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<String> {
-    let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
-    payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
-    payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
+    let version: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|f| f.parse::<u32>().unwrap())
+        .collect();
+    let mut payload = version[0].to_le_bytes().to_vec();
+    payload.extend_from_slice(&version[1].to_le_bytes());
+    payload.extend_from_slice(&version[2].to_le_bytes());
     payload.extend_from_slice(destination.as_bytes());
     send_data(&payload, stream);
     let response = receive_data(stream);
