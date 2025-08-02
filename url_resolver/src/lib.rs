@@ -1,16 +1,20 @@
 use async_std::task;
 use futures::{FutureExt, select};
 use std::{cmp::Ordering, env, net::TcpStream};
-use tracing::{Level, debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use utils::{receive_data, send_data};
 
-extern crate mdparser;
+// extern crate mdparser;
 
 const DNS_IP: &str = "0.0.0.0:6202";
 const CACHER_IP: &str = "0.0.0.0:6203";
 
-#[async_std::main]
-async fn main() {
+pub async fn resolve(
+    dest_addr: &str,
+    integrity_check: Option<bool>,
+    dns_ip: Option<&str>,
+    cacher_ip: Option<&str>,
+) -> String {
     let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
         .map(|f| match f.parse::<u32>() {
@@ -21,74 +25,14 @@ async fn main() {
         })
         .collect();
     assert!(program_version.len() > 2);
-    let mut dns_ip = String::from(DNS_IP);
-    let mut cacher_ip = String::from(CACHER_IP);
-    let mut verbose_level = 0u8;
-    let mut dest_addr = String::new();
-    let mut integrity_check = false;
-    // let mut stacks = "MRKDN".to_string();
-    let args: Vec<String> = env::args().collect();
-    for (i, arg) in args.iter().enumerate() {
-        if arg.starts_with("--") {
-            match arg.strip_prefix("--").unwrap_or_default() {
-                "dns-cacher" => cacher_ip = args[i + 1].clone(),
-                "dns-provider" => dns_ip = args[i + 1].clone(),
-                "integrity-check" => integrity_check = true,
-                "resolve" => dest_addr = args[i + 1].clone(),
-                // "stacks" => stacks = args[i + 1].clone(),
-                "verbose" => verbose_level += 1,
-                _ => panic!("Pre-init failure; unknown long-name argument: {arg}"),
-            }
-        } else if arg.starts_with("-") {
-            let mut argindex = i;
-            for char in arg.strip_prefix("-").unwrap_or_default().chars() {
-                match char {
-                    'c' => {
-                        cacher_ip = args[argindex + 1].clone();
-                        argindex += 1;
-                    }
-                    'd' => {
-                        dns_ip = args[argindex + 1].clone();
-                        argindex += 1;
-                    }
-                    'i' => integrity_check = true,
-                    'r' => {
-                        dest_addr = args[argindex + 1].clone();
-                        argindex += 1;
-                    }
-                    // 's' => {
-                    //     stacks = args[argindex + 1].clone();
-                    //     argindex += 1;
-                    // }
-                    'v' => verbose_level += 1,
-                    _ => panic!("Pre-init failure; unknown short-name argument: {arg}"),
-                }
-            }
-        }
-    }
-    let log_level = match verbose_level {
-        0 => Level::INFO,
-        1 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
-        tracing_subscriber::fmt().init();
-    });
-    // if stacks.len() % 5 != 0 {
-    //     error!("Each stack name must be five characters long.");
-    //     return;
-    // }
-    // if stacks.chars().any(|c| !c.is_alphanumeric()) {
-    //     error!("Each stack name must be alphanumeric.");
-    //     return;
-    // }
-    let dest_addr_clone = dest_addr.clone();
+    let dns_ip = dns_ip.unwrap_or(DNS_IP).to_owned();
+    let cacher_ip = cacher_ip.unwrap_or(CACHER_IP).to_owned();
+    let integrity_check = integrity_check.unwrap_or(false);
+    let mut result = String::new();
+    let dest_addr_clone = dest_addr.to_owned();
     let mut cache_handle =
         task::spawn(async move { cache_task(&cacher_ip, &dest_addr_clone).await }).fuse();
-    let dest_addr_clone = dest_addr.clone();
+    let dest_addr_clone = dest_addr.to_owned();
     let mut dns_handle =
         task::spawn(async move { dns_task(&dns_ip, &dest_addr_clone).await }).fuse();
     let mut comparison = None;
@@ -138,13 +82,14 @@ async fn main() {
     };
     if data.is_some() {
         let response = data.unwrap();
-        println!("{}/{}", response.0, response.1);
+        result = format!("{}/{}", response.0, response.1);
     } else {
         println!("Failure");
     }
     if comparison.is_some() && integrity_check {
         comparison.unwrap().await;
     }
+    result
 }
 
 fn address_splitter(address: &str) -> (String, String) {

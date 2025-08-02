@@ -3,10 +3,32 @@ use gtk::{
     glib::{self, clone},
     prelude::*,
 };
-use std::process::Command;
+use std::env;
+use url_resolver::resolve;
+use utils::trace_subscription;
 const APP_ID: &str = "dither.browser";
 
-fn main() -> glib::ExitCode {
+#[async_std::main]
+async fn main() -> glib::ExitCode {
+    let mut verbose_level = 0u8;
+    let args: Vec<String> = env::args().collect();
+    for (i, arg) in args.iter().enumerate() {
+        if arg.starts_with("--") {
+            match arg.strip_prefix("--").unwrap_or_default() {
+                "verbose" => verbose_level += 1,
+                _ => panic!("Pre-init failure; unknown long-name argument: {arg}"),
+            }
+        } else if arg.starts_with("-") {
+            let mut _argindex = i;
+            for char in arg.strip_prefix("-").unwrap_or_default().chars() {
+                match char {
+                    'v' => verbose_level += 1,
+                    _ => panic!("Pre-init failure; unknown short-name argument: {arg}"),
+                }
+            }
+        }
+    }
+    trace_subscription(verbose_level);
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(build_ui);
     app.run()
@@ -62,24 +84,16 @@ fn build_ui(app: &Application) {
             search_button.set_active(false);
         }
     ));
-    entry.connect_activate(clone!(
-        #[weak]
-        label,
-        move |entry| {
-            let output = Command::new("./target/debug/url_resolver")
-                .arg("-r")
-                .arg(entry.text())
-                .output()
-                .unwrap(); //Never unwrap lolz gonna have to remember to remove this
-            label.set_text(
-                str::from_utf8(&output.stdout)
-                    .unwrap()
-                    .lines()
-                    .last()
-                    .unwrap_or_default(),
-            );
-        }
-    ));
+    entry.connect_activate({
+        clone!(
+            #[weak]
+            label,
+            move |entry| {
+                let text = async_std::task::block_on(resolve(&entry.text(), None, None, None));
+                label.set_text(&text);
+            }
+        )
+    });
     search_bar.set_child(Some(&entry));
     window.present();
 }

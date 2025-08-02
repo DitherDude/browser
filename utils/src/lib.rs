@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
 };
-use tracing::{debug, trace, warn};
+use tracing::{Level, debug, trace, warn};
 
 pub fn receive_data(mut stream: &TcpStream) -> Vec<u8> {
     trace!("Started receiving data.");
@@ -128,4 +128,18 @@ pub fn version_compare(
         }
     }
     Ordering::Equal
+}
+
+pub fn trace_subscription(verbose_level: u8) {
+    let log_level = match verbose_level {
+        0 => Level::INFO,
+        1 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(log_level)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
+        tracing_subscriber::fmt().init();
+    });
 }

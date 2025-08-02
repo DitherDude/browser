@@ -4,8 +4,8 @@ use std::{
     env,
     net::{TcpListener, TcpStream},
 };
-use tracing::{Level, debug, error, info, trace, warn};
-use utils::{receive_data, send_data, send_error, version_compare};
+use tracing::{debug, error, info, trace, warn};
+use utils::{receive_data, send_data, send_error, trace_subscription, version_compare};
 
 const DEFAULT_PORT: u16 = 6203;
 
@@ -54,17 +54,7 @@ async fn main() {
             }
         }
     }
-    let log_level = match verbose_level {
-        0 => Level::INFO,
-        1 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
-        tracing_subscriber::fmt().init();
-    });
+    trace_subscription(verbose_level);
     let port = match portstr.parse() {
         Ok(p) => p,
         Err(e) => {
