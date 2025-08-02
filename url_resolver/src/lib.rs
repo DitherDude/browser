@@ -84,7 +84,7 @@ pub async fn resolve(
         let response = data.unwrap();
         result = format!("{}/{}", response.0, response.1);
     } else {
-        println!("Failure");
+        error!("Unable to resolve {}.", dest_addr);
     }
     if comparison.is_some() && integrity_check {
         comparison.unwrap().await;
@@ -108,7 +108,7 @@ async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<(String, String)> {
         };
         info!("Connected to {}", dns_ip);
         debug!("Attempting to resolve {}", dest_fqdn);
-        let dest_ip = dns_resolve(&stream, &dest_fqdn, "", dns_ip);
+        let dest_ip = dns_resolve(&stream, &dest_fqdn, "", dns_ip, &["".to_string()]);
         info!(
             "Resolved {} to {}!",
             dest_fqdn,
@@ -125,7 +125,13 @@ async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<(String, String)> {
     None
 }
 
-fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) -> Option<String> {
+fn dns_resolve(
+    stream: &TcpStream,
+    destination: &str,
+    prev: &str,
+    dns_ip: &str,
+    routes: &[String],
+) -> Option<String> {
     let block = destination.split('.').next_back().unwrap_or_default();
     let next_prev = ".".to_owned() + block + prev;
     let is_last_block = block == destination;
@@ -179,7 +185,7 @@ fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) 
                 return None;
             };
             info!("Connected to {}", fqdn);
-            return dns_resolve(&newstream, destination, prev, &fqdn);
+            return dns_resolve(&newstream, destination, prev, &fqdn, routes);
         }
         302 => {
             // 302: Found
@@ -189,7 +195,15 @@ fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) 
                     "End of client chain reached, but server returned {} as DNS.",
                     fqdn
                 );
+                if routes.contains(&fqdn.to_string()) {
+                    error!(
+                        "DNS redirection has looped. Please notify DNS provider of misconfiguration."
+                    );
+                    return None;
+                }
             }
+            let mut routes = routes.to_vec();
+            routes.push(fqdn.to_string());
             trace!("Attempting to resolve intermediary DNS Server {}", &fqdn);
             let newdestination = if !is_last_block {
                 destination
@@ -209,7 +223,7 @@ fn dns_resolve(stream: &TcpStream, destination: &str, prev: &str, dns_ip: &str) 
                 return None;
             };
             debug!("Attempting to resolve {}", newdestination);
-            return dns_resolve(&newstream, &newdestination, &next_prev, &fqdn);
+            return dns_resolve(&newstream, &newdestination, &next_prev, &fqdn, &routes);
         }
         410 => {
             // 410: Client Error Gone

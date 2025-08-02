@@ -90,7 +90,11 @@ fn build_ui(app: &Application) {
             label,
             move |entry| {
                 let text = async_std::task::block_on(resolve(&entry.text(), None, None, None));
-                label.set_text(&text);
+                if text.is_empty() {
+                    label.set_text("Website not found.");
+                } else {
+                    label.set_text(&text);
+                }
             }
         )
     });
