@@ -215,7 +215,7 @@ fn dns_resolve(
             debug!("Attempting to resolve {}", newdestination);
             return dns_resolve(&newstream, &newdestination, &next_prev, &fqdn, &routes);
         }
-        status::CLIENT_ERROR_GONE => {
+        status::GONE => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             if !is_last_block {
                 warn!("Reached end of DNS chain early! Rectifying FQN as {}", fqdn);

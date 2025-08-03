@@ -153,7 +153,7 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
         Ok(pool) => pool,
         Err(e) => {
             error!("Failed to connect to database: {}", e);
-            return 421u32.to_le_bytes().to_vec();
+            return status::MISDIRECTED.to_le_bytes().to_vec();
         }
     };
     if let Ok(record) = sqlx::query!(
@@ -175,7 +175,7 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
                 "This DNS server {} has moved to {}!",
                 destination, return_addr
             );
-            let mut payload = 301u32.to_le_bytes().to_vec();
+            let mut payload = status::PERMANENT_REDIRECT.to_le_bytes().to_vec();
             payload.extend_from_slice(return_addr.as_bytes());
             return payload;
         }
@@ -200,27 +200,27 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
                 if domain_ip.is_some() && domain_port.is_some() {
                     let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
                     trace!("Resolved {} to {}.", destination, return_addr);
-                    let mut payload = 200u32.to_le_bytes().to_vec();
+                    let mut payload = status::SUCCESS.to_le_bytes().to_vec();
                     payload.extend_from_slice(return_addr.as_bytes());
                     return payload;
                 } else if dns_ip.is_some() && dns_port.is_some() {
                     let return_addr = format!("{}:{}", dns_ip.unwrap(), dns_port.unwrap());
                     trace!("Resolved {} to {}.", destination, return_addr);
-                    let mut payload = 302u32.to_le_bytes().to_vec();
+                    let mut payload = status::FOUND.to_le_bytes().to_vec();
                     payload.extend_from_slice(return_addr.as_bytes());
                 }
                 warn!("Failed to resolve {}.", destination);
-                return 410u32.to_le_bytes().to_vec();
+                return status::GONE.to_le_bytes().to_vec();
             } else if dns_ip.is_some() && dns_port.is_some() {
                 let return_addr = format!("{}:{}", dns_ip.unwrap(), dns_port.unwrap());
                 trace!("Resolved {} to DNS {}.", destination, return_addr);
-                let mut payload = 302u32.to_le_bytes().to_vec();
+                let mut payload = status::FOUND.to_le_bytes().to_vec();
                 payload.extend_from_slice(return_addr.as_bytes());
                 return payload;
             } else if domain_ip.is_some() && domain_port.is_some() {
                 let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
                 trace!("Resolved {} to {}.", destination, return_addr);
-                let mut payload = 200u32.to_le_bytes().to_vec();
+                let mut payload = status::SUCCESS.to_le_bytes().to_vec();
                 payload.extend_from_slice(return_addr.as_bytes());
                 return payload;
             }
@@ -252,7 +252,7 @@ async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {
             let domain_port = record.domain_port;
             if domain_ip.is_some() && domain_port.is_some() {
                 let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
-                let mut payload = 203u32.to_le_bytes().to_vec();
+                let mut payload = status::NON_AUTHOROTATIVE.to_le_bytes().to_vec();
                 payload.extend_from_slice(return_addr.as_bytes());
                 return payload;
             }
@@ -262,7 +262,7 @@ async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {
             warn!("Failed to fetch wildcard record: {}", e);
         }
     }
-    421u32.to_le_bytes().to_vec()
+    status::MISDIRECTED.to_le_bytes().to_vec()
 }
 
 async fn check_database(pool: &MySqlPool, overwrite: bool) {

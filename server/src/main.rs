@@ -204,7 +204,7 @@ async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str
         "Client requested markdown content for path: {}",
         &destination
     );
-    let mut payload = 200u32.to_le_bytes().to_vec();
+    let mut payload = status::SUCCESS.to_le_bytes().to_vec();
     payload.extend_from_slice(SERVER_PTCLS[1]);
     let filedump = File::open(&content);
     match filedump {
@@ -244,7 +244,7 @@ async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
         return;
     }
     debug!("Client requested file dump for file: {}", &content);
-    let mut payload = 200u32.to_le_bytes().to_vec();
+    let mut payload = status::SUCCESS.to_le_bytes().to_vec();
     payload.extend_from_slice(SERVER_PTCLS[1]);
     let filedump = File::open(&path);
     match filedump {

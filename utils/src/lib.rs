@@ -154,7 +154,7 @@ pub mod status {
     pub const TOO_SMALL: u32 = 402;
     pub const FORBIDDEN: u32 = 403;
     pub const NOT_FOUND: u32 = 404;
-    pub const CLIENT_ERROR_GONE: u32 = 410;
+    pub const GONE: u32 = 410;
     pub const MISDIRECTED: u32 = 421;
     pub const UNPROCESSABLE: u32 = 422;
     pub const UPGRADE_REQUIRED: u32 = 426;

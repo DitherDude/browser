@@ -153,7 +153,7 @@ async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
         Ok(pool) => pool,
         Err(e) => {
             error!("Failed to connect to database: {}", e);
-            return 421u32.to_le_bytes().to_vec();
+            return status::MISDIRECTED.to_le_bytes().to_vec();
         }
     };
     if let Ok(record) = sqlx::query!(
@@ -175,7 +175,7 @@ async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
                 "This DNS cache server {} has moved to {}!",
                 destination, return_addr
             );
-            let mut payload = 301u32.to_le_bytes().to_vec();
+            let mut payload = status::PERMANENT_REDIRECT.to_le_bytes().to_vec();
             payload.extend_from_slice(return_addr.as_bytes());
             return payload;
         }
@@ -197,16 +197,16 @@ async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
             if domain_ip.is_some() && domain_port.is_some() {
                 let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
                 trace!("Resolved {} to {}.", destination, return_addr);
-                let mut payload = 200u32.to_le_bytes().to_vec();
+                let mut payload = status::SUCCESS.to_le_bytes().to_vec();
                 payload.extend_from_slice(return_addr.as_bytes());
                 return payload;
             }
             warn!("Failed to resolve {}.", destination);
-            421u32.to_le_bytes().to_vec()
+            status::MISDIRECTED.to_le_bytes().to_vec()
         }
         Err(e) => {
             warn!("Failed to fetch record for {}: {}", destination, e);
-            421u32.to_le_bytes().to_vec()
+            status::MISDIRECTED.to_le_bytes().to_vec()
         }
     }
 }
