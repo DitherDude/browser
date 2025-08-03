@@ -2,9 +2,7 @@ use async_std::task;
 use futures::{FutureExt, select};
 use std::{cmp::Ordering, env, net::TcpStream};
 use tracing::{debug, error, info, trace, warn};
-use utils::{receive_data, send_data};
-
-// extern crate mdparser;
+use utils::{receive_data, send_data, status};
 
 const DNS_IP: &str = "0.0.0.0:6202";
 const CACHER_IP: &str = "0.0.0.0:6203";
@@ -42,7 +40,6 @@ pub async fn resolve(
             if result.is_some() {
                 info!("Cache handle returned first");
                 return_data = result.clone();
-                // return_data = get_data(result.clone().unwrap(), &stacks).await;
                 if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap().0, dns_handle)));}
             }
             else {
@@ -50,7 +47,6 @@ pub async fn resolve(
                 let dns_res = dns_handle.await;
                 if dns_res.is_some() {
                     return_data = dns_res;
-                    // return_data = get_data(dns_res.clone().unwrap(), &stacks).await;
                 }
                 else {
                     warn!("Unable to resolve {}!", dest_addr);
@@ -63,7 +59,6 @@ pub async fn resolve(
             if result.is_some() {
                 info!("DNS handle returned first");
                 return_data = result.clone();
-                // return_data = get_data(result.clone().unwrap(), &stacks).await;
                 if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap().0, cache_handle)));}
             }
             else {
@@ -71,7 +66,6 @@ pub async fn resolve(
                 let cache_res = cache_handle.await;
                 if cache_res.is_some() {
                     return_data = cache_res;
-                    // return_data = get_data(cache_res.clone().unwrap(), &stacks).await;
                 }
                 else {
                     warn!("Unable to resolve {}!", dest_addr);
@@ -158,16 +152,14 @@ fn dns_resolve(
         _ => {}
     }
     match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-        200 => {
-            // 200: Server OK / Success
+        status::SUCCESS => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             if !is_last_block {
                 warn!("DNS resolved to destination {} early.", fqdn);
             }
             return Some(fqdn.into_owned());
         }
-        203 => {
-            // 203: Non-Authoritative Information
+        status::NON_AUTHOROTATIVE => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             warn!(
                 "DNS fallback configured to correct FQN {} where doesn't exist.",
@@ -175,8 +167,7 @@ fn dns_resolve(
             );
             return Some(fqdn.into_owned());
         }
-        301 => {
-            // 301: Permenant Redirect
+        status::PERMANENT_REDIRECT => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             warn!("DNS Server {} has moved to {}!", dns_ip, fqdn);
             trace!("Attempting to connect to new DNS Server {}", fqdn);
@@ -187,8 +178,7 @@ fn dns_resolve(
             info!("Connected to {}", fqdn);
             return dns_resolve(&newstream, destination, prev, &fqdn, routes);
         }
-        302 => {
-            // 302: Found
+        status::FOUND => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             if is_last_block {
                 warn!(
@@ -225,16 +215,14 @@ fn dns_resolve(
             debug!("Attempting to resolve {}", newdestination);
             return dns_resolve(&newstream, &newdestination, &next_prev, &fqdn, &routes);
         }
-        410 => {
-            // 410: Client Error Gone
+        status::CLIENT_ERROR_GONE => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             if !is_last_block {
                 warn!("Reached end of DNS chain early! Rectifying FQN as {}", fqdn);
             }
             return Some(fqdn.into_owned());
         }
-        421 => {
-            // 421: Misdirected Request
+        status::MISDIRECTED => {
             error!("DNS Server couldn't resolve {}.", next_prev);
         }
         _ => {
@@ -297,13 +285,11 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
         _ => {}
     }
     match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-        200 => {
-            // 200: Server OK / Success
+        status::SUCCESS => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             return Some(fqdn.into_owned());
         }
-        301 => {
-            // 301: Permenant Redirect
+        status::PERMANENT_REDIRECT => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             warn!("DNS Cacher {} has moved to {}!", dns_ip, fqdn);
             trace!("Attempting to connect to new DNS Cacher {}", fqdn);
@@ -314,8 +300,7 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
             info!("Connected to {}", fqdn);
             return cache_resolve(&newstream, destination, &fqdn);
         }
-        421 => {
-            // 421: Misdirected Request
+        status::MISDIRECTED => {
             error!("DNS Cacher couldn't resolve {}.", destination);
         }
         _ => {
@@ -351,8 +336,7 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
 //         }
 //         _ => {
 //             match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-//                 200 => {
-//                     // 200: Server OK / Success
+//                 status::SUCCESS => {
 //                     println!(
 //                         "Server responsed with protocol {}",
 //                         String::from_utf8_lossy(&response[4..9])
@@ -386,15 +370,15 @@ async fn compare_results(
 
 fn decode_error(response: &[u8; 4]) {
     match u32::from_le_bytes(*response) {
-        000 => error!("[TESTING] Not implemented."),
-        400 => error!("Bad request."),
-        402 => error!("Payload too small."),
-        403 => error!("Forbidden action."),
-        404 => error!("Resource not found."),
-        422 => error!("Unprocessable request."),
-        426 => error!("Upgrade required."),
-        427 => error!("Downgrade required."),
-        501 => error!("Operation not implemented."),
+        status::TEST_NOT_IMPLEMENTED => error!("[TESTING] Not implemented."),
+        status::BAD_REQUEST => error!("Bad request."),
+        status::TOO_SMALL => error!("Payload too small."),
+        status::FORBIDDEN => error!("Forbidden action."),
+        status::NOT_FOUND => error!("Resource not found."),
+        status::UNPROCESSABLE => error!("Unprocessable request."),
+        status::UPGRADE_REQUIRED => error!("Upgrade required."),
+        status::DOWNGRADE_REQUIRED => error!("Downgrade required."),
+        status::NOT_IMPLEMENTED => error!("Operation not implemented."),
         _ => error!("Communication fault."),
     }
 }

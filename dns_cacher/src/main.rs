@@ -5,7 +5,7 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 use tracing::{debug, error, info, trace, warn};
-use utils::{receive_data, send_data, send_error, trace_subscription, version_compare};
+use utils::{receive_data, send_data, send_error, status, trace_subscription, version_compare};
 
 const DEFAULT_PORT: u16 = 6203;
 
@@ -113,14 +113,14 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
         Ok(peer) => peer,
         Err(e) => {
             warn!("Some fuckn' loser decided to not have an IP address: {}", e);
-            send_error(&stream, 400);
+            send_error(&stream, status::BAD_REQUEST);
             return;
         }
     };
     let data = receive_data(&stream);
     if data.len() < 13 {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-        send_error(&stream, 402);
+        send_error(&stream, status::TOO_SMALL);
         return;
     }
     let request = String::from_utf8_lossy(&data[12..]);
@@ -134,8 +134,8 @@ async fn handle_connection(stream: TcpStream, sql_url: &str) {
     let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0, 0, 0, 0]));
     let client_tiny = u32::from_le_bytes(data[8..12].try_into().unwrap_or([0, 0, 0, 0]));
     match version_compare((client_maj, client_min, client_tiny), peer, version) {
-        Ordering::Greater => send_error(&stream, 427),
-        Ordering::Less => send_error(&stream, 426),
+        Ordering::Greater => send_error(&stream, status::DOWNGRADE_REQUIRED),
+        Ordering::Less => send_error(&stream, status::UPGRADE_REQUIRED),
         _ => (),
     }
     let payload = resolve(&request, sql_url).await;

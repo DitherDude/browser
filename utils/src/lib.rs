@@ -75,7 +75,7 @@ pub fn send_data(payload: &[u8], mut stream: &TcpStream) {
     trace!("Finished sending data.");
 }
 
-pub fn send_error(stream: &TcpStream, err: i32) {
+pub fn send_error(stream: &TcpStream, err: u32) {
     send_data(&err.to_le_bytes(), stream);
     stream
         .shutdown(std::net::Shutdown::Both)
@@ -142,4 +142,22 @@ pub fn trace_subscription(verbose_level: u8) {
     tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
         tracing_subscriber::fmt().init();
     });
+}
+
+pub mod status {
+    pub const TEST_NOT_IMPLEMENTED: u32 = 0;
+    pub const SUCCESS: u32 = 200;
+    pub const NON_AUTHOROTATIVE: u32 = 203;
+    pub const PERMANENT_REDIRECT: u32 = 301;
+    pub const FOUND: u32 = 302;
+    pub const BAD_REQUEST: u32 = 400;
+    pub const TOO_SMALL: u32 = 402;
+    pub const FORBIDDEN: u32 = 403;
+    pub const NOT_FOUND: u32 = 404;
+    pub const CLIENT_ERROR_GONE: u32 = 410;
+    pub const MISDIRECTED: u32 = 421;
+    pub const UNPROCESSABLE: u32 = 422;
+    pub const UPGRADE_REQUIRED: u32 = 426;
+    pub const DOWNGRADE_REQUIRED: u32 = 427;
+    pub const NOT_IMPLEMENTED: u32 = 501;
 }

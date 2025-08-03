@@ -31,7 +31,7 @@ async fn main() -> glib::ExitCode {
     trace_subscription(verbose_level);
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(build_ui);
-    app.run()
+    app.run_with_args(&[""])
 }
 
 fn build_ui(app: &Application) {
@@ -84,20 +84,24 @@ fn build_ui(app: &Application) {
             search_button.set_active(false);
         }
     ));
-    entry.connect_activate({
-        clone!(
-            #[weak]
-            label,
-            move |entry| {
-                let text = async_std::task::block_on(resolve(&entry.text(), None, None, None));
-                if text.is_empty() {
-                    label.set_text("Website not found.");
-                } else {
-                    label.set_text(&text);
-                }
+    entry.connect_activate(move |entry| {
+        let entry_clone = entry.clone();
+        let label_weak = gtk::Label::downgrade(&label);
+        glib::MainContext::default().spawn_local(async move {
+            if let Some(label) = label_weak.upgrade() {
+                load_webpage(&entry_clone, &label).await;
             }
-        )
+        });
     });
     search_bar.set_child(Some(&entry));
     window.present();
+}
+
+async fn load_webpage(entry: &gtk::SearchEntry, label: &gtk::Label) {
+    let text = resolve(&entry.text(), None, None, None).await;
+    if text.is_empty() {
+        label.set_text("Website not found.");
+    } else {
+        label.set_text(&text);
+    }
 }

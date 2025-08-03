@@ -7,7 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 use tracing::{debug, error, info, trace, warn};
-use utils::{receive_data, send_data, send_error, trace_subscription, version_compare};
+use utils::{receive_data, send_data, send_error, status, trace_subscription, version_compare};
 
 const DEFAULT_PORT: u16 = 6204;
 const SERVER_PTCLS: [&[u8; 5]; 4] = [b"HTML!", b"MRKDN", b"CRAWL", b"RWDTA"];
@@ -116,35 +116,35 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
         Ok(peer) => peer,
         Err(e) => {
             warn!("Some fuckn' loser decided to not have an IP address: {}", e);
-            send_error(&stream, 400);
+            send_error(&stream, status::BAD_REQUEST);
             return;
         }
     };
     let data = receive_data(&stream);
     if data.len() < 14 {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-        send_error(&stream, 402);
+        send_error(&stream, status::TOO_SMALL);
         return;
     }
     let client_maj = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0, 0, 0, 0]));
     let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0, 0, 0, 0]));
     let client_tiny = u32::from_le_bytes(data[8..12].try_into().unwrap_or([0, 0, 0, 0]));
     match version_compare((client_maj, client_min, client_tiny), peer, version) {
-        Ordering::Greater => send_error(&stream, 427),
-        Ordering::Less => send_error(&stream, 426),
+        Ordering::Greater => send_error(&stream, status::DOWNGRADE_REQUIRED),
+        Ordering::Less => send_error(&stream, status::UPGRADE_REQUIRED),
         _ => (),
     }
     let mut data = &data[12..];
     if data.is_empty() {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-        send_error(&stream, 402);
+        send_error(&stream, status::TOO_SMALL);
         return;
     }
     let mut client_protocols = vec![[0u8; 5]];
     loop {
         if data.len() < 5 {
             warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-            send_error(&stream, 402);
+            send_error(&stream, status::TOO_SMALL);
             return;
         }
         client_protocols.push(data[0..5].try_into().unwrap_or([0u8; 5]));
@@ -162,7 +162,7 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
         }
     }
     if using_protocol.is_none() {
-        send_error(&stream, 422);
+        send_error(&stream, status::UNPROCESSABLE);
         return;
     }
     let using_protocol = using_protocol.unwrap();
@@ -188,16 +188,16 @@ async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str
     let path = Path::new(destination);
     let path = Path::new(&directory).join(path);
     if !pathcheck(&path, Path::new(directory)).await {
-        send_error(stream, 403);
+        send_error(stream, status::FORBIDDEN);
         return;
     }
     if !path.is_dir().await {
-        send_error(stream, 404);
+        send_error(stream, status::NOT_FOUND);
         return;
     }
     let content = path.join("index.md");
     if !content.is_file().await {
-        send_error(stream, 404);
+        send_error(stream, status::NOT_FOUND);
         return;
     }
     debug!(
@@ -216,14 +216,14 @@ async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str
                 }
                 Err(e) => {
                     warn!("Failed to read file: {}", e);
-                    send_error(stream, 404);
+                    send_error(stream, status::NOT_FOUND);
                     return;
                 }
             }
         }
         Err(e) => {
             warn!("Failed to open file: {}", e);
-            send_error(stream, 404);
+            send_error(stream, status::NOT_FOUND);
             return;
         }
     }
@@ -236,11 +236,11 @@ async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
     let path = Path::new(content);
     let path = Path::new(&directory).join(path);
     if !pathcheck(&path, Path::new(directory)).await {
-        send_error(stream, 403);
+        send_error(stream, status::FORBIDDEN);
         return;
     }
     if !path.is_file().await {
-        send_error(stream, 404);
+        send_error(stream, status::NOT_FOUND);
         return;
     }
     debug!("Client requested file dump for file: {}", &content);
@@ -256,14 +256,14 @@ async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
                 }
                 Err(e) => {
                     warn!("Failed to read file: {}", e);
-                    send_error(stream, 404);
+                    send_error(stream, status::NOT_FOUND);
                     return;
                 }
             }
         }
         Err(e) => {
             warn!("Failed to open file: {}", e);
-            send_error(stream, 404);
+            send_error(stream, status::NOT_FOUND);
             return;
         }
     }
