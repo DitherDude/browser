@@ -6,7 +6,7 @@ use gtk::{
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, path};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use url_resolver::{dns_task, resolve};
 use utils::{get_config_dir, trace_subscription};
 const APP_ID: &str = "dither.browser";
@@ -166,12 +166,11 @@ async fn try_cache_webpage(
         let sub_url = blocks.join(".");
         warn!("Looking for {}", sub_url);
         if let Ok(Some(record)) =
-            sqlx::query_as::<_, Ephemeral>("SELECT * FROM ephemeral WHERE url = ?;")
+            sqlx::query_as::<_, Ephemeral>("SELECT * FROM ephemeral WHERE url = ?")
                 .bind(&sub_url)
                 .fetch_optional(&pool)
                 .await
         {
-            error!("Record found for {}!", sub_url);
             trace!("Record found for {}!", sub_url);
             let ip = record.ip;
             let dest = if lookahead.is_empty() {
@@ -303,7 +302,7 @@ async fn create_cache() -> bool {
 
 #[derive(sqlx::FromRow)]
 struct Ephemeral {
-    _id: i64,
-    _url: String,
+    id: i64,
+    url: String,
     ip: String,
 }
