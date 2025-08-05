@@ -168,3 +168,28 @@ pub fn get_config_dir(applet: &str) -> Option<PathBuf> {
     ProjectDirs::from("com", "DitherDude", applet)
         .map(|proj_dirs| proj_dirs.config_dir().to_path_buf())
 }
+
+#[allow(dead_code)]
+pub mod sql_cols {
+    #[derive(sqlx::FromRow)]
+    pub struct Count {
+        pub count: i32,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct DomainRecord {
+        pub domain_ip: Option<String>,
+        pub domain_port: Option<u16>,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct DNSRecord {
+        pub dns_ip: Option<String>,
+        pub dns_port: Option<u16>,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct ProviderRecord {
+        pub domain_ip: Option<String>,
+        pub domain_port: Option<u16>,
+        pub dns_ip: Option<String>,
+        pub dns_port: Option<u16>,
+    }
+}

@@ -5,7 +5,9 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 use tracing::{debug, error, info, trace, warn};
-use utils::{receive_data, send_data, send_error, status, trace_subscription, version_compare};
+use utils::{
+    receive_data, send_data, send_error, sql_cols, status, trace_subscription, version_compare,
+};
 
 const DEFAULT_PORT: u16 = 6202;
 
@@ -156,14 +158,14 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
             return status::MISDIRECTED.to_le_bytes().to_vec();
         }
     };
-    if let Ok(record) = sqlx::query!(
+    if let Ok(record) = sqlx::query_as::<_, sql_cols::DNSRecord>(
         r#"
         SELECT dns_ip, dns_port
         FROM dns_records
         WHERE name = ?
         "#,
-        ".".to_owned()
     )
+    .bind(".".to_owned())
     .fetch_one(&pool)
     .await
     {
@@ -180,14 +182,14 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
             return payload;
         }
     }
-    match sqlx::query!(
+    match sqlx::query_as::<_, sql_cols::ProviderRecord>(
         r#"
         SELECT domain_ip, domain_port, dns_ip, dns_port
         FROM dns_records
         WHERE name = ?
         "#,
-        destination
     )
+    .bind(destination)
     .fetch_one(&pool)
     .await
     {
@@ -236,14 +238,14 @@ async fn resolve(destination: &str, sql_url: &str, is_last_block: bool) -> Vec<u
 
 async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {
     debug!("Fetching wildcard record...");
-    match sqlx::query!(
+    match sqlx::query_as::<_, sql_cols::DomainRecord>(
         r#"
         SELECT domain_ip, domain_port
         FROM dns_records
         WHERE name = ?
         "#,
-        "."
     )
+    .bind(".")
     .fetch_one(pool)
     .await
     {
@@ -267,7 +269,7 @@ async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {
 
 async fn check_database(pool: &MySqlPool, overwrite: bool) {
     trace!("Checking database schema integrity...");
-    match sqlx::query!(
+    match sqlx::query_as::<_, sql_cols::Count>(
         r#"
         SELECT
             COUNT(*) as count
@@ -313,7 +315,7 @@ async fn check_database(pool: &MySqlPool, overwrite: bool) {
 }
 
 async fn overwrite_database(pool: &MySqlPool) {
-    match sqlx::query!(
+    match sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS dns_records (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -323,7 +325,7 @@ async fn overwrite_database(pool: &MySqlPool) {
             dns_ip VARCHAR(63) NULL,
             dns_port SMALLINT UNSIGNED NULL CHECK (dns_port BETWEEN 0 AND 25565)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        "#
+        "#,
     )
     .execute(pool)
     .await

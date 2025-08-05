@@ -196,7 +196,7 @@ async fn try_cache_webpage(
             match dest {
                 Some(dest) => {
                     label.set_text(&dest);
-                    let verified_url = Some(dest.clone());
+                    verified_url = Some(dest.clone());
                     if let Some(validated_url) = resolve_url(&entry.text()).await {
                         if dest != validated_url {
                             error!("Cache held invalid url!");
@@ -313,6 +313,7 @@ async fn create_cache() -> bool {
     true
 }
 
+#[allow(dead_code)]
 #[derive(sqlx::FromRow)]
 struct Ephemeral {
     id: i64,

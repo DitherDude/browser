@@ -5,7 +5,9 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 use tracing::{debug, error, info, trace, warn};
-use utils::{receive_data, send_data, send_error, status, trace_subscription, version_compare};
+use utils::{
+    receive_data, send_data, send_error, sql_cols, status, trace_subscription, version_compare,
+};
 
 const DEFAULT_PORT: u16 = 6203;
 
@@ -156,14 +158,14 @@ async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
             return status::MISDIRECTED.to_le_bytes().to_vec();
         }
     };
-    if let Ok(record) = sqlx::query!(
+    if let Ok(record) = sqlx::query_as::<_, sql_cols::DomainRecord>(
         r#"
         SELECT domain_ip, domain_port
         FROM dns_cache
         WHERE name = ?
         "#,
-        ".".to_owned()
     )
+    .bind(".".to_owned())
     .fetch_one(&pool)
     .await
     {
@@ -180,14 +182,14 @@ async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
             return payload;
         }
     }
-    match sqlx::query!(
+    match sqlx::query_as::<_, sql_cols::DomainRecord>(
         r#"
         SELECT domain_ip, domain_port
         FROM dns_cache
         WHERE name = ?
         "#,
-        destination
     )
+    .bind(destination)
     .fetch_one(&pool)
     .await
     {
@@ -213,7 +215,7 @@ async fn resolve(destination: &str, sql_url: &str) -> Vec<u8> {
 
 async fn check_database(pool: &MySqlPool, overwrite: bool) {
     trace!("Checking database schema integrity...");
-    match sqlx::query!(
+    match sqlx::query_as::<_, sql_cols::Count>(
         r#"
         SELECT
             COUNT(*) as count
@@ -257,7 +259,7 @@ async fn check_database(pool: &MySqlPool, overwrite: bool) {
 }
 
 async fn overwrite_database(pool: &MySqlPool) {
-    match sqlx::query!(
+    match sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS dns_cache (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -265,7 +267,7 @@ async fn overwrite_database(pool: &MySqlPool) {
             domain_ip VARCHAR(63) NULL,
             domain_port SMALLINT UNSIGNED NULL CHECK (domain_port BETWEEN 0 AND 25565)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        "#
+        "#,
     )
     .execute(pool)
     .await
