@@ -165,7 +165,6 @@ async fn try_cache_webpage(
     while !blocks.is_empty() {
         trace!("Blocks: {:?}", blocks);
         let sub_url = blocks.join(".");
-        warn!("Looking for {}", sub_url);
         if let Ok(Some(record)) =
             sqlx::query_as::<_, Ephemeral>("SELECT * FROM ephemeral WHERE url = ?")
                 .bind(&sub_url)
@@ -219,7 +218,7 @@ async fn try_cache_webpage(
                     };
                 }
                 None => {
-                    error!("I honestly forgot what causes this");
+                    error!("Congrats! I have no idea how you got here.");
                     verified_url = resolve_url(&entry.text()).await;
                 }
             }
