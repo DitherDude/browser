@@ -1,14 +1,13 @@
+use async_std::io;
 use gtk::{
     Application, ApplicationWindow,
     glib::{self, clone},
     prelude::*,
 };
-use sqlx::{
-    Pool,
-    sqlite::{SqliteConnectOptions, SqlitePool},
-};
-use std::{env, path};
-use url_resolver::resolve;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use std::{env, fs, path};
+use tracing::{debug, error};
+use url_resolver::{dns_task, resolve};
 use utils::{get_config_dir, trace_subscription};
 const APP_ID: &str = "dither.browser";
 const PROJ_NAME: &str = "Browser";
@@ -34,12 +33,14 @@ async fn main() -> glib::ExitCode {
         }
     }
     trace_subscription(verbose_level);
+    let caching = create_cache().await;
+    debug!("Caching enabled: {caching}");
     let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(build_ui);
+    app.connect_activate(move |app| build_ui(app, caching));
     app.run_with_args(&[""])
 }
 
-fn build_ui(app: &Application) {
+fn build_ui(app: &Application, caching: bool) {
     let widgets = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
@@ -94,7 +95,17 @@ fn build_ui(app: &Application) {
         let label_weak = gtk::Label::downgrade(&label);
         glib::MainContext::default().spawn_local(async move {
             if let Some(label) = label_weak.upgrade() {
-                try_cache_webpage(&entry_clone, &label).await;
+                match try_cache_webpage(&entry_clone, &label, caching).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("FS error: {}", e);
+                        label.set_text(
+                            &resolve_url(&entry_clone.text())
+                                .await
+                                .unwrap_or("Website not found.".to_string()),
+                        );
+                    }
+                }
             }
         });
     });
@@ -102,17 +113,150 @@ fn build_ui(app: &Application) {
     window.present();
 }
 
-async fn try_cache_webpage(entry: &gtk::SearchEntry, label: &gtk::Label) {
+async fn try_cache_webpage(
+    entry: &gtk::SearchEntry,
+    label: &gtk::Label,
+    caching: bool,
+) -> io::Result<()> {
     label.set_text("Loading...");
-    let config_dir = if let Some(config_dir) = get_config_dir(PROJ_NAME) {
-        config_dir
-    } else {
+    if !caching {
         label.set_text(
             &resolve_url(&entry.text())
                 .await
                 .unwrap_or("Website not found.".to_string()),
         );
-        return;
+        return Ok(());
+    }
+    let config_dir = match get_config_dir(PROJ_NAME) {
+        Some(dir) => dir,
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotSeekable,
+                "Could not determine compatable configuration directory.",
+            ));
+        }
+    };
+    fs::create_dir_all(&config_dir)?;
+    let dbpath = config_dir.join(path::Path::new("cache.db"));
+    let pool = match SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(dbpath)
+            .create_if_missing(true),
+    )
+    .await
+    {
+        Ok(pool) => pool,
+        Err(e) => {
+            return Err(io::Error::other(format!("Database error: {e}")));
+        }
+    };
+    let text = entry.text();
+    let (url, port) = text
+        .strip_prefix("web://")
+        .unwrap_or_default()
+        .split_once('/')
+        .unwrap_or_default()
+        .0
+        .split_once(':')
+        .unwrap_or_default();
+    let port = port.parse::<u16>().ok();
+    let mut blocks = url.split('.').collect::<Vec<_>>();
+    let mut lookahead = String::new();
+    let mut verified_url = None;
+    while !blocks.is_empty() {
+        let sub_url = blocks.join(".");
+        if let Ok(Some(record)) =
+            sqlx::query_as::<_, Ephemeral>("SELECT ip FROM ephemeral WHERE url = ?")
+                .bind(&sub_url)
+                .fetch_optional(&pool)
+                .await
+        {
+            let ip = record.ip;
+            let dest = if lookahead.is_empty() {
+                Some(ip)
+            } else {
+                let value = dns_task(&ip, &lookahead).await;
+                match value {
+                    Some(value) => Some(format!("{}:{}", value.0, value.1)),
+                    None => None,
+                }
+            };
+            let dest = if dest.is_some() && port.is_some() {
+                Some(format!(
+                    "{}:{}",
+                    dest.unwrap().split_once(':').unwrap_or_default().0,
+                    port.unwrap()
+                ))
+            } else {
+                dest
+            };
+            match dest {
+                Some(dest) => {
+                    verified_url = Some(dest.clone());
+                    if let Some(validated_url) = resolve_url(&entry.text()).await {
+                        if dest != validated_url {
+                            error!("Cache held invalid url!");
+                            debug!(
+                                "Cache reported {}, but validated to {}",
+                                dest, validated_url
+                            );
+                            verified_url = Some(validated_url);
+                        }
+                    };
+                }
+                None => {
+                    error!("I honestly forgot what causes this");
+                    verified_url = resolve_url(&entry.text()).await;
+                }
+            }
+            break;
+        }
+        let lastblock = blocks.last().copied().unwrap_or_default().to_owned();
+        lookahead = if lookahead.is_empty() {
+            lastblock
+        } else if lookahead.starts_with(".") {
+            lastblock + &lookahead
+        } else {
+            lastblock + "." + &lookahead
+        };
+        blocks.pop();
+    }
+    if lookahead.is_empty() && verified_url.is_some() {
+        match sqlx::query("INSERT INTO ephemeral (url, ip) VALUES (?, ?)")
+            .bind(url)
+            .bind(verified_url.as_ref().unwrap())
+            .execute(&pool)
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                error!("Database error: {}", e);
+            }
+        };
+    }
+    label.set_text(&verified_url.unwrap_or("Website not found.".to_string()));
+    Ok(())
+}
+
+async fn resolve_url(destination: &str) -> Option<String> {
+    let ip = resolve(destination, None, None, None).await;
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
+async fn create_cache() -> bool {
+    let config_dir = match get_config_dir(PROJ_NAME) {
+        Some(dir) => dir,
+        None => {
+            error!("Could not determine compatable configuration directory.");
+            return false;
+        }
+    };
+    match fs::create_dir_all(&config_dir) {
+        Ok(_) => {}
+        Err(e) => {
+            error!("FS error: {}", e);
+            return false;
+        }
     };
     let dbpath = config_dir.join(path::Path::new("cache.db"));
     let pool = match SqlitePool::connect_with(
@@ -124,48 +268,33 @@ async fn try_cache_webpage(entry: &gtk::SearchEntry, label: &gtk::Label) {
     {
         Ok(pool) => pool,
         Err(e) => {
-            label.set_text(&e.to_string());
-            return;
+            error!("Database error: {}", e);
+            return false;
         }
     };
-    // let mut lines = Vec::new();
-    // let mut result = String::new();
-    // file.read_to_end(&mut lines);
-    // let mut found = false;
-    // let mut lines: Vec<String> = String::from_utf8_lossy(&lines)
-    //     .split('\n')
-    //     .map(|s| s.to_owned())
-    //     .collect();
-    // for line in &lines {
-    //     let split = line.split_once('\x00').unwrap_or_default();
-    //     if split.0 == entry.text() {
-    //         label.set_text(split.1);
-    //         result = split.1.to_string();
-    //         found = true;
-    //         break;
-    //     }
-    // }
-    // let ip = resolve_url(&entry.text()).await;
-    // if let Some(ip) = ip {
-    //     if ip != result {
-    //         label.set_text(&ip);
-    //         if !found {
-    //             let line = entry.text().to_string() + "\x00" + &ip;
-    //             lines.push(line);
-    //         } else {
-    //             let line = entry.text().to_string() + "\x00";
-    //             let index = &lines.iter().enumerate().find(|s| s.1.starts_with(&line));
-    //             if index.is_some() {
-    //                 let line = line + &ip;
-    //                 lines[index.unwrap().0] = line;
-    //             }
-    //         }
-    //         file.write_all(lines.concat().as_bytes());
-    //     }
-    // }
+    match sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS ephemeral
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT UNIQUE NOT NULL,
+            ip TEXT NOT NULL);
+        "#,
+    )
+    .execute(&pool)
+    .await
+    {
+        Ok(_) => {}
+        Err(e) => {
+            error!("Database error: {}", e);
+            return false;
+        }
+    }
+    true
 }
 
-async fn resolve_url(destination: &str) -> Option<String> {
-    let ip = resolve(destination, None, None, None).await;
-    if ip.is_empty() { None } else { Some(ip) }
+#[derive(sqlx::FromRow)]
+struct Ephemeral {
+    _id: i64,
+    _url: String,
+    ip: String,
 }

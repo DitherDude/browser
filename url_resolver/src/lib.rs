@@ -92,7 +92,7 @@ fn address_splitter(address: &str) -> (String, String) {
     (fqdn.to_string(), endpoint.to_string())
 }
 
-async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<(String, String)> {
+pub async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<(String, String)> {
     let (dest_fqdn, dest_endpoint) = address_splitter(dest_addr);
     if dns_ip != String::new() {
         trace!("Attempting to resolve DNS Server {}", dns_ip);
