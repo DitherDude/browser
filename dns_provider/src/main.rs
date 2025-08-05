@@ -252,7 +252,7 @@ async fn resolve_wildcard(pool: &MySqlPool) -> Vec<u8> {
             let domain_port = record.domain_port;
             if domain_ip.is_some() && domain_port.is_some() {
                 let return_addr = format!("{}:{}", domain_ip.unwrap(), domain_port.unwrap());
-                let mut payload = status::NON_AUTHOROTATIVE.to_le_bytes().to_vec();
+                let mut payload = status::NON_AUTHORITATIVE.to_le_bytes().to_vec();
                 payload.extend_from_slice(return_addr.as_bytes());
                 return payload;
             }

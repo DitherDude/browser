@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 gtk.workspace = true
 pango.workspace = true
-regex.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

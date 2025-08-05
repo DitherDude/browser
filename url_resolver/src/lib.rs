@@ -159,7 +159,7 @@ fn dns_resolve(
             }
             return Some(fqdn.into_owned());
         }
-        status::NON_AUTHOROTATIVE => {
+        status::NON_AUTHORITATIVE => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             warn!(
                 "DNS fallback configured to correct FQN {} where doesn't exist.",

@@ -1,7 +1,9 @@
+use directories::ProjectDirs;
 use std::{
     cmp::Ordering,
     io::{Read, Write},
     net::TcpStream,
+    path::PathBuf,
 };
 use tracing::{Level, debug, trace, warn};
 
@@ -147,7 +149,7 @@ pub fn trace_subscription(verbose_level: u8) {
 pub mod status {
     pub const TEST_NOT_IMPLEMENTED: u32 = 0;
     pub const SUCCESS: u32 = 200;
-    pub const NON_AUTHOROTATIVE: u32 = 203;
+    pub const NON_AUTHORITATIVE: u32 = 203;
     pub const PERMANENT_REDIRECT: u32 = 301;
     pub const FOUND: u32 = 302;
     pub const BAD_REQUEST: u32 = 400;
@@ -160,4 +162,9 @@ pub mod status {
     pub const UPGRADE_REQUIRED: u32 = 426;
     pub const DOWNGRADE_REQUIRED: u32 = 427;
     pub const NOT_IMPLEMENTED: u32 = 501;
+}
+
+pub fn get_config_dir(applet: &str) -> Option<PathBuf> {
+    ProjectDirs::from("com", "DitherDude", applet)
+        .map(|proj_dirs| proj_dirs.config_dir().to_path_buf())
 }

@@ -3,10 +3,15 @@ use gtk::{
     glib::{self, clone},
     prelude::*,
 };
-use std::env;
+use sqlx::{
+    Pool,
+    sqlite::{SqliteConnectOptions, SqlitePool},
+};
+use std::{env, path};
 use url_resolver::resolve;
-use utils::trace_subscription;
+use utils::{get_config_dir, trace_subscription};
 const APP_ID: &str = "dither.browser";
+const PROJ_NAME: &str = "Browser";
 
 #[async_std::main]
 async fn main() -> glib::ExitCode {
@@ -89,7 +94,7 @@ fn build_ui(app: &Application) {
         let label_weak = gtk::Label::downgrade(&label);
         glib::MainContext::default().spawn_local(async move {
             if let Some(label) = label_weak.upgrade() {
-                load_webpage(&entry_clone, &label).await;
+                try_cache_webpage(&entry_clone, &label).await;
             }
         });
     });
@@ -97,11 +102,70 @@ fn build_ui(app: &Application) {
     window.present();
 }
 
-async fn load_webpage(entry: &gtk::SearchEntry, label: &gtk::Label) {
-    let text = resolve(&entry.text(), None, None, None).await;
-    if text.is_empty() {
-        label.set_text("Website not found.");
+async fn try_cache_webpage(entry: &gtk::SearchEntry, label: &gtk::Label) {
+    label.set_text("Loading...");
+    let config_dir = if let Some(config_dir) = get_config_dir(PROJ_NAME) {
+        config_dir
     } else {
-        label.set_text(&text);
-    }
+        label.set_text(
+            &resolve_url(&entry.text())
+                .await
+                .unwrap_or("Website not found.".to_string()),
+        );
+        return;
+    };
+    let dbpath = config_dir.join(path::Path::new("cache.db"));
+    let pool = match SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(dbpath)
+            .create_if_missing(true),
+    )
+    .await
+    {
+        Ok(pool) => pool,
+        Err(e) => {
+            label.set_text(&e.to_string());
+            return;
+        }
+    };
+    // let mut lines = Vec::new();
+    // let mut result = String::new();
+    // file.read_to_end(&mut lines);
+    // let mut found = false;
+    // let mut lines: Vec<String> = String::from_utf8_lossy(&lines)
+    //     .split('\n')
+    //     .map(|s| s.to_owned())
+    //     .collect();
+    // for line in &lines {
+    //     let split = line.split_once('\x00').unwrap_or_default();
+    //     if split.0 == entry.text() {
+    //         label.set_text(split.1);
+    //         result = split.1.to_string();
+    //         found = true;
+    //         break;
+    //     }
+    // }
+    // let ip = resolve_url(&entry.text()).await;
+    // if let Some(ip) = ip {
+    //     if ip != result {
+    //         label.set_text(&ip);
+    //         if !found {
+    //             let line = entry.text().to_string() + "\x00" + &ip;
+    //             lines.push(line);
+    //         } else {
+    //             let line = entry.text().to_string() + "\x00";
+    //             let index = &lines.iter().enumerate().find(|s| s.1.starts_with(&line));
+    //             if index.is_some() {
+    //                 let line = line + &ip;
+    //                 lines[index.unwrap().0] = line;
+    //             }
+    //         }
+    //         file.write_all(lines.concat().as_bytes());
+    //     }
+    // }
+}
+
+async fn resolve_url(destination: &str) -> Option<String> {
+    let ip = resolve(destination, None, None, None).await;
+    if ip.is_empty() { None } else { Some(ip) }
 }
