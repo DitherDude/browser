@@ -6,7 +6,7 @@ use gtk::{
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, path};
-use tracing::{debug, error};
+use tracing::{debug, error, trace, warn};
 use url_resolver::{dns_task, resolve};
 use utils::{get_config_dir, trace_subscription};
 const APP_ID: &str = "dither.browser";
@@ -120,6 +120,7 @@ async fn try_cache_webpage(
 ) -> io::Result<()> {
     label.set_text("Loading...");
     if !caching {
+        trace!("Caching disabled. Will resolve directly.");
         label.set_text(
             &resolve_url(&entry.text())
                 .await
@@ -150,27 +151,28 @@ async fn try_cache_webpage(
             return Err(io::Error::other(format!("Database error: {e}")));
         }
     };
+    trace!("Successfully connected to database");
     let text = entry.text();
-    let (url, port) = text
-        .strip_prefix("web://")
-        .unwrap_or_default()
-        .split_once('/')
-        .unwrap_or_default()
-        .0
-        .split_once(':')
-        .unwrap_or_default();
+    let text = text.strip_prefix("web://").unwrap_or(&text);
+    let (url, _endpoint) = text.split_once('/').unwrap_or((text, ""));
+    let (url, port) = url.split_once(':').unwrap_or((url, ""));
     let port = port.parse::<u16>().ok();
+    trace!("URL: {url}, Port: {port:?}, Endpoint: {_endpoint}");
     let mut blocks = url.split('.').collect::<Vec<_>>();
     let mut lookahead = String::new();
     let mut verified_url = None;
     while !blocks.is_empty() {
+        trace!("Blocks: {:?}", blocks);
         let sub_url = blocks.join(".");
+        warn!("Looking for {}", sub_url);
         if let Ok(Some(record)) =
-            sqlx::query_as::<_, Ephemeral>("SELECT ip FROM ephemeral WHERE url = ?")
+            sqlx::query_as::<_, Ephemeral>("SELECT * FROM ephemeral WHERE url = ?;")
                 .bind(&sub_url)
                 .fetch_optional(&pool)
                 .await
         {
+            error!("Record found for {}!", sub_url);
+            trace!("Record found for {}!", sub_url);
             let ip = record.ip;
             let dest = if lookahead.is_empty() {
                 Some(ip)
@@ -221,8 +223,15 @@ async fn try_cache_webpage(
         };
         blocks.pop();
     }
+    if blocks.is_empty() {
+        warn!("No cache found for {}!", url);
+        debug!("resolving {} directly...", url);
+        verified_url = resolve_url(&entry.text()).await;
+        lookahead = String::new();
+    }
     if lookahead.is_empty() && verified_url.is_some() {
-        match sqlx::query("INSERT INTO ephemeral (url, ip) VALUES (?, ?)")
+        debug!("Caching resolved url");
+        match sqlx::query("INSERT INTO ephemeral (url, ip) VALUES (?, ?);")
             .bind(url)
             .bind(verified_url.as_ref().unwrap())
             .execute(&pool)
