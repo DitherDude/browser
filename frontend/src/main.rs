@@ -6,7 +6,7 @@ use gtk::{
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, path};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 use url_resolver::{dns_task, resolve};
 use utils::{get_config_dir, trace_subscription};
 const APP_ID: &str = "dither.browser";
@@ -161,6 +161,7 @@ async fn try_cache_webpage(
     let mut blocks = url.split('.').collect::<Vec<_>>();
     let mut lookahead = String::new();
     let mut verified_url = None;
+    let mut cache_used = false;
     while !blocks.is_empty() {
         trace!("Blocks: {:?}", blocks);
         let sub_url = blocks.join(".");
@@ -172,6 +173,7 @@ async fn try_cache_webpage(
                 .await
         {
             trace!("Record found for {}!", sub_url);
+            cache_used = true;
             let ip = record.ip;
             let dest = if lookahead.is_empty() {
                 Some(ip)
@@ -193,7 +195,8 @@ async fn try_cache_webpage(
             };
             match dest {
                 Some(dest) => {
-                    verified_url = Some(dest.clone());
+                    label.set_text(&dest);
+                    let verified_url = Some(dest.clone());
                     if let Some(validated_url) = resolve_url(&entry.text()).await {
                         if dest != validated_url {
                             error!("Cache held invalid url!");
@@ -201,6 +204,16 @@ async fn try_cache_webpage(
                                 "Cache reported {}, but validated to {}",
                                 dest, validated_url
                             );
+                            match sqlx::query("DELETE FROM ephemeral WHERE url = ?;")
+                                .bind(&sub_url)
+                                .execute(&pool)
+                                .await
+                            {
+                                Ok(_) => cache_used = false,
+                                Err(e) => {
+                                    error!("Database error: {}", e);
+                                }
+                            }
                             verified_url = Some(validated_url);
                         }
                     };
@@ -228,7 +241,7 @@ async fn try_cache_webpage(
         verified_url = resolve_url(&entry.text()).await;
         lookahead = String::new();
     }
-    if lookahead.is_empty() && verified_url.is_some() {
+    if lookahead.is_empty() && verified_url.is_some() && !cache_used {
         debug!("Caching resolved url");
         match sqlx::query("INSERT INTO ephemeral (url, ip) VALUES (?, ?);")
             .bind(url)
