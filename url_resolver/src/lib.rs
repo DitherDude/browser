@@ -37,51 +37,58 @@ pub async fn resolve(
     let data = select! {
         result = cache_handle => {
             let mut return_data = None;
-            if result.is_some() {
-                info!("Cache handle returned first");
-                return_data = result.clone();
-                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap(), dns_handle)));}
-            }
-            else {
-                warn!("Cache handle returned None! Fallback to DNS handle.");
-                let dns_res = dns_handle.await;
-                if dns_res.is_some() {
-                    return_data = dns_res;
+            match result {
+                Some(address) => {
+                    info!("Cache handle returned first");
+                    return_data = Some(address.clone());
+                    if integrity_check {comparison = Some(task::spawn(compare_results(address, dns_handle)));}
                 }
-                else {
-                    warn!("Unable to resolve {}!", dest_addr);
+                None => {
+                    warn!("Cache handle returned None! Fallback to DNS handle.");
+                    let dns_res = dns_handle.await;
+                    if dns_res.is_some() {
+                        return_data = dns_res;
+                    }
+                    else {
+                        warn!("Unable to resolve {}!", dest_addr);
+                    }
                 }
             }
             return_data
         }
         result = dns_handle => {
             let mut return_data = None;
-            if result.is_some() {
-                info!("DNS handle returned first");
-                return_data = result.clone();
-                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap(), cache_handle)));}
-            }
-            else {
-                warn!("DNS handle returned None! Fallback to cache handle.");
-                let cache_res = cache_handle.await;
-                if cache_res.is_some() {
-                    return_data = cache_res;
+            match result {
+                Some(address) => {
+                    info!("DNS handle returned first");
+                    return_data = Some(address.clone());
+                    if integrity_check {comparison = Some(task::spawn(compare_results(address, cache_handle)));}
                 }
-                else {
-                    warn!("Unable to resolve {}!", dest_addr);
+                None => {
+                    warn!("DNS handle returned None! Fallback to cache handle.");
+                    let cache_res = cache_handle.await;
+                    if cache_res.is_some() {
+                        return_data = cache_res;
+                    }
+                    else {
+                        warn!("Unable to resolve {}!", dest_addr);
+                    }
                 }
             }
             return_data
         }
     };
-    if data.is_some() {
-        let response = data.unwrap();
-        result = response;
-    } else {
-        error!("Unable to resolve {}.", dest_addr);
+    match data {
+        Some(data) => {
+            let response = data;
+            result = response;
+        }
+        None => error!("Unable to resolve {}.", dest_addr),
     }
-    if comparison.is_some() && integrity_check {
-        comparison.unwrap().await;
+    if let Some(comparison) = comparison
+        && integrity_check
+    {
+        comparison.await;
     }
     result
 }

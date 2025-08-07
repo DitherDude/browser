@@ -172,11 +172,7 @@ async fn try_cache_webpage(
                 let dest = if lookahead.is_empty() {
                     Some(ip)
                 } else {
-                    let value = dns_task(&ip, &lookahead).await;
-                    match value {
-                        Some(value) => Some(format!("{}:{}", value.0, value.1)),
-                        None => None,
-                    }
+                    dns_task(&ip, &lookahead).await
                 };
                 let dest = if dest.is_some() && port.is_some() {
                     Some(format!(
