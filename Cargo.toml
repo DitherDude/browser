@@ -16,7 +16,6 @@ directories = "6.0.0"
 futures = "0.3.31"
 gtk = { version = "0.10.0", package = "gtk4", features = ["v4_18"] }
 libloading = "0.8.8"
-pango = "0.21.0"
 sqlx = { version = "0.8.6", features = [
     "mysql",
     "runtime-async-std",

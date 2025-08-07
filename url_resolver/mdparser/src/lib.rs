@@ -1,5 +1,4 @@
 use gtk::prelude::*;
-use pango::{AttrFontDesc, AttrList, FontDescription};
 use std::{env, fs::File, io::Read};
 use tracing::{Level, error};
 
@@ -58,32 +57,43 @@ pub fn main() {
 
 #[unsafe(no_mangle)]
 pub fn get_elements(contents: String) -> gtk::Box {
-    error!("Workin!");
-    let mut contents = contents;
+    let _ = gtk::init();
+    let mut contents = contents.clone();
     let widgets = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
     while !contents.is_empty() {
         match contents.split_ascii_whitespace().next().unwrap_or_default() {
-            "###" => {
+            "#" => {
                 let header = contents.split_once('\n').unwrap_or_default().0;
-                let header = gtk::Label::builder().label(header).build();
-                let font_desc = FontDescription::from_string("size=xx-large");
-                let attr_list = AttrList::new();
-                attr_list.insert(AttrFontDesc::new(&font_desc));
-                header.set_attributes(Some(&attr_list));
+                let header = gtk::Label::builder()
+                    .label(header.trim_start_matches("# "))
+                    .halign(gtk::Align::Start)
+                    .valign(gtk::Align::Start)
+                    .css_classes(["title-1"])
+                    .build();
                 widgets.append(&header);
                 contents = contents.split_once('\n').unwrap_or_default().1.to_owned();
             }
             "##" => {
                 let header = contents.split_once('\n').unwrap_or_default().0;
-                let header = gtk::Label::builder().label(header).build();
+                let header = gtk::Label::builder()
+                    .label(header.trim_start_matches("## "))
+                    .halign(gtk::Align::Start)
+                    .valign(gtk::Align::Start)
+                    .css_classes(["title-2"])
+                    .build();
                 widgets.append(&header);
                 contents = contents.split_once('\n').unwrap_or_default().1.to_owned();
             }
             _ => {
                 let para = contents.split_once('\n').unwrap_or_default().0;
-                let para = gtk::Label::builder().label(para).build();
+                let para = gtk::Label::builder()
+                    .label(para)
+                    .halign(gtk::Align::Start)
+                    .valign(gtk::Align::Start)
+                    .css_classes(["document"])
+                    .build();
                 widgets.append(&para);
                 contents = contents.split_once('\n').unwrap_or_default().1.to_owned();
             }

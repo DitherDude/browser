@@ -361,10 +361,9 @@ pub fn parse_md(elements: &str) -> Option<gtk::Box> {
                 Ok(lib) => lib,
                 Err(_) => return None,
             };
-            let func: libloading::Symbol<fn(elements: &str) -> gtk::Box> =
+            let func: libloading::Symbol<fn(elements: String) -> gtk::Box> =
                 lib.get("get_elements".as_bytes()).unwrap();
-            error!("Here");
-            Some(func(elements))
+            Some(func(elements.to_owned()))
         }
     }
     mdparser(elements)

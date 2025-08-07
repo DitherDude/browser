@@ -257,7 +257,9 @@ async fn try_cache_webpage(
             };
         }
     }
-    //empty jailcell
+    while let Some(prisoner) = jailcell.last_child() {
+        jailcell.remove(&prisoner);
+    }
     if let Some(webview) = webview {
         if let Some(webview) = webview.await {
             jailcell.append(&webview);
@@ -339,9 +341,7 @@ fn no_webpage() -> gtk::Box {
     let label = gtk::Label::builder()
         .label("Error retrieving webpage!")
         .vexpand(true)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .css_classes(["large-title"])
+        .css_classes(["title-1"])
         .build();
     let webview = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
