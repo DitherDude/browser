@@ -8,4 +8,4 @@ async-std.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-utils = { path = "../utils" }
+utils.workspace = true

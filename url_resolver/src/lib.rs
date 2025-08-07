@@ -129,13 +129,19 @@ fn dns_resolve(
     let block = destination.split('.').next_back().unwrap_or_default();
     let next_prev = ".".to_owned() + block + prev;
     let is_last_block = block == destination;
-    let version: Vec<u32> = env!("CARGO_PKG_VERSION")
+    let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
-        .map(|f| f.parse::<u32>().unwrap())
+        .map(|f| match f.parse::<u32>() {
+            Ok(version) => version,
+            Err(e) => {
+                panic!("Failed to parse version: {e}");
+            }
+        })
         .collect();
-    let mut payload = version[0].to_le_bytes().to_vec();
-    payload.extend_from_slice(&version[1].to_le_bytes());
-    payload.extend_from_slice(&version[2].to_le_bytes());
+    assert!(program_version.len() > 2);
+    let mut payload = program_version[0].to_le_bytes().to_vec();
+    payload.extend_from_slice(&program_version[1].to_le_bytes());
+    payload.extend_from_slice(&program_version[2].to_le_bytes());
     payload.extend_from_slice(if is_last_block { &[0u8] } else { &[1u8] });
     payload.extend_from_slice(block.as_bytes());
     send_data(&payload, stream);
@@ -263,13 +269,19 @@ async fn cache_task(cacher_ip: &str, dest_addr: &str) -> Option<(String, String)
 }
 
 fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<String> {
-    let version: Vec<u32> = env!("CARGO_PKG_VERSION")
+    let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
-        .map(|f| f.parse::<u32>().unwrap())
+        .map(|f| match f.parse::<u32>() {
+            Ok(version) => version,
+            Err(e) => {
+                panic!("Failed to parse version: {e}");
+            }
+        })
         .collect();
-    let mut payload = version[0].to_le_bytes().to_vec();
-    payload.extend_from_slice(&version[1].to_le_bytes());
-    payload.extend_from_slice(&version[2].to_le_bytes());
+    assert!(program_version.len() > 2);
+    let mut payload = program_version[0].to_le_bytes().to_vec();
+    payload.extend_from_slice(&program_version[1].to_le_bytes());
+    payload.extend_from_slice(&program_version[2].to_le_bytes());
     payload.extend_from_slice(destination.as_bytes());
     send_data(&payload, stream);
     let response = receive_data(stream);
@@ -368,7 +380,7 @@ async fn compare_results(
     }
 }
 
-fn decode_error(response: &[u8; 4]) {
+pub fn decode_error(response: &[u8; 4]) {
     match u32::from_le_bytes(*response) {
         status::TEST_NOT_IMPLEMENTED => error!("[TESTING] Not implemented."),
         status::BAD_REQUEST => error!("Bad request."),
@@ -381,4 +393,22 @@ fn decode_error(response: &[u8; 4]) {
         status::NOT_IMPLEMENTED => error!("Operation not implemented."),
         _ => error!("Communication fault."),
     }
+}
+
+pub fn parse_md(elements: &str) -> Option<gtk::Box> {
+    pub fn mdparser(elements: &str) -> Option<gtk::Box> {
+        unsafe {
+            let lib = match libloading::Library::new(
+                env::consts::DLL_PREFIX.to_owned() + "mdparser." + env::consts::DLL_EXTENSION,
+            ) {
+                Ok(lib) => lib,
+                Err(_) => return None,
+            };
+            let func: libloading::Symbol<fn(elements: &str) -> gtk::Box> =
+                lib.get("get_elements".as_bytes()).unwrap();
+            error!("Here");
+            Some(func(elements))
+        }
+    }
+    mdparser(elements)
 }

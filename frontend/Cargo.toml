@@ -10,4 +10,4 @@ sqlx.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url_resolver = { path = "../url_resolver" }
-utils = { path = "../utils" }
+utils.workspace = true

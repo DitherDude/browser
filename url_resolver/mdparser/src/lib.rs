@@ -56,7 +56,9 @@ pub fn main() {
     let _elements = get_elements(contents);
 }
 
-fn get_elements(contents: String) -> gtk::Box {
+#[unsafe(no_mangle)]
+pub fn get_elements(contents: String) -> gtk::Box {
+    error!("Workin!");
     let mut contents = contents;
     let widgets = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -91,6 +93,6 @@ fn get_elements(contents: String) -> gtk::Box {
 }
 
 #[unsafe(no_mangle)]
-pub fn test() {
-    println!("Working!");
+pub fn test() -> String {
+    "Working!".to_owned()
 }

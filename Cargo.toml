@@ -1,11 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
-    "url_resolver",
     "dns_cacher",
     "dns_provider",
     "frontend",
     "server",
+    "url_resolver",
+    "url_resolver/mdparser",
     "utils",
 ]
 
@@ -14,6 +15,7 @@ async-std = { version = "1.13.1", features = ["attributes"] }
 directories = "6.0.0"
 futures = "0.3.31"
 gtk = { version = "0.10.0", package = "gtk4", features = ["v4_18"] }
+libloading = "0.8.8"
 pango = "0.21.0"
 sqlx = { version = "0.8.6", features = [
     "mysql",
@@ -22,3 +24,4 @@ sqlx = { version = "0.8.6", features = [
 ] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
+utils = { path = "utils" }

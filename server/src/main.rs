@@ -108,10 +108,16 @@ async fn main() {
 }
 
 async fn handle_connection(stream: TcpStream, directory: &str) {
-    let version: Vec<u32> = env!("CARGO_PKG_VERSION")
+    let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
-        .map(|f| f.parse::<u32>().unwrap())
+        .map(|f| match f.parse::<u32>() {
+            Ok(version) => version,
+            Err(e) => {
+                panic!("Failed to parse version: {e}");
+            }
+        })
         .collect();
+    assert!(program_version.len() > 2);
     let peer = match stream.peer_addr() {
         Ok(peer) => peer,
         Err(e) => {
@@ -129,7 +135,7 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
     let client_maj = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0, 0, 0, 0]));
     let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0, 0, 0, 0]));
     let client_tiny = u32::from_le_bytes(data[8..12].try_into().unwrap_or([0, 0, 0, 0]));
-    match version_compare((client_maj, client_min, client_tiny), peer, version) {
+    match version_compare((client_maj, client_min, client_tiny), peer, program_version) {
         Ordering::Greater => send_error(&stream, status::DOWNGRADE_REQUIRED),
         Ordering::Less => send_error(&stream, status::UPGRADE_REQUIRED),
         _ => (),

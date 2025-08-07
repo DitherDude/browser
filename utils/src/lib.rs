@@ -89,47 +89,68 @@ pub fn version_compare(
     peer: std::net::SocketAddr,
     ptcl_ver: Vec<u32>,
 ) -> Ordering {
-    match client.0.cmp(&ptcl_ver[0]) {
-        Ordering::Greater => {
-            warn!(
-                "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                peer.ip(),
-                peer.port(),
-                client.0,
-                client.1,
-                ptcl_ver[0],
-                ptcl_ver[1]
-            );
-            return Ordering::Greater;
-        }
-        Ordering::Less => {
-            warn!(
-                "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                peer.ip(),
-                peer.port(),
-                client.0,
-                client.1,
-                ptcl_ver[0],
-                ptcl_ver[1]
-            );
-            return Ordering::Less;
-        }
-        _ => {
-            if client.1.cmp(&ptcl_ver[1]) == Ordering::Greater {
-                warn!(
-                    "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                    peer.ip(),
-                    peer.port(),
-                    client.0,
-                    client.1,
-                    ptcl_ver[0],
-                    ptcl_ver[1]
-                );
+    if client.0 == 0 || ptcl_ver[0] == 0 {
+        match client.1.cmp(&ptcl_ver[1]) {
+            Ordering::Greater => {
+                log_incompatibility(client, peer, ptcl_ver);
                 return Ordering::Greater;
+            }
+            Ordering::Less => {
+                log_incompatibility(client, peer, ptcl_ver);
+                return Ordering::Less;
+            }
+            _ => {
+                if client.2.cmp(&ptcl_ver[2]) == Ordering::Greater {
+                    log_incompatibility(client, peer, ptcl_ver);
+                    return Ordering::Greater;
+                }
+            }
+        }
+    } else {
+        match client.0.cmp(&ptcl_ver[0]) {
+            Ordering::Greater => {
+                log_incompatibility(client, peer, ptcl_ver);
+                return Ordering::Greater;
+            }
+            Ordering::Less => {
+                log_incompatibility(client, peer, ptcl_ver);
+                return Ordering::Less;
+            }
+            _ => {
+                if client.1.cmp(&ptcl_ver[1]) == Ordering::Greater {
+                    log_incompatibility(client, peer, ptcl_ver);
+                    return Ordering::Greater;
+                }
             }
         }
     }
     Ordering::Equal
+}
+
+fn log_incompatibility(client: (u32, u32, u32), peer: std::net::SocketAddr, ptcl_ver: Vec<u32>) {
+    if client.0 == 0 || ptcl_ver[0] == 0 {
+        warn!(
+            "Connection from {}:{} used an incompatible protocol: {}.{}.{}, expected {}.{}.{}",
+            peer.ip(),
+            peer.port(),
+            client.0,
+            client.1,
+            client.2,
+            ptcl_ver[0],
+            ptcl_ver[1],
+            ptcl_ver[2]
+        );
+    } else {
+        warn!(
+            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+            peer.ip(),
+            peer.port(),
+            client.0,
+            client.1,
+            ptcl_ver[0],
+            ptcl_ver[1]
+        );
+    }
 }
 
 pub fn trace_subscription(verbose_level: u8) {
@@ -169,7 +190,6 @@ pub fn get_config_dir(applet: &str) -> Option<PathBuf> {
         .map(|proj_dirs| proj_dirs.config_dir().to_path_buf())
 }
 
-#[allow(dead_code)]
 pub mod sql_cols {
     #[derive(sqlx::FromRow)]
     pub struct Count {
@@ -191,5 +211,11 @@ pub mod sql_cols {
         pub domain_port: Option<u16>,
         pub dns_ip: Option<String>,
         pub dns_port: Option<u16>,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct EphemeralRecord {
+        pub id: i64,
+        pub url: String,
+        pub ip: String,
     }
 }
