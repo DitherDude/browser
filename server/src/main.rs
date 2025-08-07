@@ -6,14 +6,23 @@ use std::{
     io::Read,
     net::{TcpListener, TcpStream},
 };
-use tracing::{Level, debug, error, info, trace, warn};
-use utils::{receive_data, send_data, send_error, version_compare};
+use tracing::{debug, error, info, trace, warn};
+use utils::{receive_data, send_data, send_error, status, trace_subscription, version_compare};
 
 const DEFAULT_PORT: u16 = 6204;
-const PTCL_VER: (u32, u32, u32) = (0, 0, 0);
 const SERVER_PTCLS: [&[u8; 5]; 4] = [b"HTML!", b"MRKDN", b"CRAWL", b"RWDTA"];
 #[async_std::main]
 async fn main() {
+    let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|f| match f.parse::<u32>() {
+            Ok(version) => version,
+            Err(e) => {
+                panic!("Failed to parse version: {e}");
+            }
+        })
+        .collect();
+    assert!(program_version.len() > 1);
     let mut verbose_level = 0u8;
     let args: Vec<String> = env::args().collect();
     let mut portstr = DEFAULT_PORT.to_string();
@@ -44,17 +53,7 @@ async fn main() {
             }
         }
     }
-    let log_level = match verbose_level {
-        0 => Level::INFO,
-        1 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
-        tracing_subscriber::fmt().init();
-    });
+    trace_subscription(verbose_level);
     let port = match portstr.parse() {
         Ok(p) => p,
         Err(e) => {
@@ -80,7 +79,7 @@ async fn main() {
             return;
         }
     }
-    let listener = match TcpListener::bind("127.0.0.1:".to_owned() + &port.to_string()) {
+    let listener = match TcpListener::bind("0.0.0.0:".to_owned() + &port.to_string()) {
         Ok(listener) => listener,
         Err(e) => {
             error!("Port is unavailable: {}", e);
@@ -109,39 +108,49 @@ async fn main() {
 }
 
 async fn handle_connection(stream: TcpStream, directory: &str) {
+    let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|f| match f.parse::<u32>() {
+            Ok(version) => version,
+            Err(e) => {
+                panic!("Failed to parse version: {e}");
+            }
+        })
+        .collect();
+    assert!(program_version.len() > 2);
     let peer = match stream.peer_addr() {
         Ok(peer) => peer,
         Err(e) => {
             warn!("Some fuckn' loser decided to not have an IP address: {}", e);
-            send_error(&stream, 400);
+            send_error(&stream, status::BAD_REQUEST);
             return;
         }
     };
     let data = receive_data(&stream);
     if data.len() < 14 {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-        send_error(&stream, 402);
+        send_error(&stream, status::TOO_SMALL);
         return;
     }
     let client_maj = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0, 0, 0, 0]));
     let client_min = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0, 0, 0, 0]));
     let client_tiny = u32::from_le_bytes(data[8..12].try_into().unwrap_or([0, 0, 0, 0]));
-    match version_compare((client_maj, client_min, client_tiny), peer, PTCL_VER) {
-        Ordering::Greater => send_error(&stream, 427),
-        Ordering::Less => send_error(&stream, 426),
+    match version_compare((client_maj, client_min, client_tiny), peer, program_version) {
+        Ordering::Greater => send_error(&stream, status::DOWNGRADE_REQUIRED),
+        Ordering::Less => send_error(&stream, status::UPGRADE_REQUIRED),
         _ => (),
     }
     let mut data = &data[12..];
     if data.is_empty() {
         warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-        send_error(&stream, 402);
+        send_error(&stream, status::TOO_SMALL);
         return;
     }
     let mut client_protocols = vec![[0u8; 5]];
     loop {
         if data.len() < 5 {
             warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
-            send_error(&stream, 402);
+            send_error(&stream, status::TOO_SMALL);
             return;
         }
         client_protocols.push(data[0..5].try_into().unwrap_or([0u8; 5]));
@@ -159,7 +168,7 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
         }
     }
     if using_protocol.is_none() {
-        send_error(&stream, 422);
+        send_error(&stream, status::UNPROCESSABLE);
         return;
     }
     let using_protocol = using_protocol.unwrap();
@@ -185,23 +194,23 @@ async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str
     let path = Path::new(destination);
     let path = Path::new(&directory).join(path);
     if !pathcheck(&path, Path::new(directory)).await {
-        send_error(stream, 403);
+        send_error(stream, status::FORBIDDEN);
         return;
     }
     if !path.is_dir().await {
-        send_error(stream, 404);
+        send_error(stream, status::NOT_FOUND);
         return;
     }
     let content = path.join("index.md");
     if !content.is_file().await {
-        send_error(stream, 404);
+        send_error(stream, status::NOT_FOUND);
         return;
     }
     debug!(
         "Client requested markdown content for path: {}",
         &destination
     );
-    let mut payload = 200u32.to_le_bytes().to_vec();
+    let mut payload = status::SUCCESS.to_le_bytes().to_vec();
     payload.extend_from_slice(SERVER_PTCLS[1]);
     let filedump = File::open(&content);
     match filedump {
@@ -213,14 +222,14 @@ async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str
                 }
                 Err(e) => {
                     warn!("Failed to read file: {}", e);
-                    send_error(stream, 404);
+                    send_error(stream, status::NOT_FOUND);
                     return;
                 }
             }
         }
         Err(e) => {
             warn!("Failed to open file: {}", e);
-            send_error(stream, 404);
+            send_error(stream, status::NOT_FOUND);
             return;
         }
     }
@@ -233,15 +242,15 @@ async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
     let path = Path::new(content);
     let path = Path::new(&directory).join(path);
     if !pathcheck(&path, Path::new(directory)).await {
-        send_error(stream, 403);
+        send_error(stream, status::FORBIDDEN);
         return;
     }
     if !path.is_file().await {
-        send_error(stream, 404);
+        send_error(stream, status::NOT_FOUND);
         return;
     }
     debug!("Client requested file dump for file: {}", &content);
-    let mut payload = 200u32.to_le_bytes().to_vec();
+    let mut payload = status::SUCCESS.to_le_bytes().to_vec();
     payload.extend_from_slice(SERVER_PTCLS[1]);
     let filedump = File::open(&path);
     match filedump {
@@ -253,14 +262,14 @@ async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
                 }
                 Err(e) => {
                     warn!("Failed to read file: {}", e);
-                    send_error(stream, 404);
+                    send_error(stream, status::NOT_FOUND);
                     return;
                 }
             }
         }
         Err(e) => {
             warn!("Failed to open file: {}", e);
-            send_error(stream, 404);
+            send_error(stream, status::NOT_FOUND);
             return;
         }
     }

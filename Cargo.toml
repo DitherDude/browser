@@ -1,19 +1,26 @@
 [workspace]
 resolver = "3"
 members = [
-    "backend",
     "dns_cacher",
     "dns_provider",
     "frontend",
     "server",
+    "url_resolver",
+    "url_resolver/mdparser",
     "utils",
 ]
 
 [workspace.dependencies]
 async-std = { version = "1.13.1", features = ["attributes"] }
+directories = "6.0.0"
 futures = "0.3.31"
-gtk = { version = "0.9.7", package = "gtk4", features = ["v4_18"] }
-regex = "1.11.1"
-sqlx = { version = "0.8.6", features = ["mysql", "runtime-async-std"] }
+gtk = { version = "0.10.0", package = "gtk4", features = ["v4_18"] }
+libloading = "0.8.8"
+sqlx = { version = "0.8.6", features = [
+    "mysql",
+    "runtime-async-std",
+    "sqlite",
+] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
+utils = { path = "utils" }

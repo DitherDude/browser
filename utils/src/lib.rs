@@ -1,9 +1,11 @@
+use directories::ProjectDirs;
 use std::{
     cmp::Ordering,
     io::{Read, Write},
     net::TcpStream,
+    path::PathBuf,
 };
-use tracing::{debug, trace, warn};
+use tracing::{Level, debug, trace, warn};
 
 pub fn receive_data(mut stream: &TcpStream) -> Vec<u8> {
     trace!("Started receiving data.");
@@ -75,7 +77,7 @@ pub fn send_data(payload: &[u8], mut stream: &TcpStream) {
     trace!("Finished sending data.");
 }
 
-pub fn send_error(stream: &TcpStream, err: i32) {
+pub fn send_error(stream: &TcpStream, err: u32) {
     send_data(&err.to_le_bytes(), stream);
     stream
         .shutdown(std::net::Shutdown::Both)
@@ -85,47 +87,142 @@ pub fn send_error(stream: &TcpStream, err: i32) {
 pub fn version_compare(
     client: (u32, u32, u32),
     peer: std::net::SocketAddr,
-    ptcl_ver: (u32, u32, u32),
+    ptcl_ver: Vec<u32>,
 ) -> Ordering {
-    match client.0.cmp(&ptcl_ver.0) {
-        Ordering::Greater => {
-            warn!(
-                "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                peer.ip(),
-                peer.port(),
-                client.0,
-                client.1,
-                ptcl_ver.0,
-                ptcl_ver.1
-            );
-            return Ordering::Greater;
-        }
-        Ordering::Less => {
-            warn!(
-                "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                peer.ip(),
-                peer.port(),
-                client.0,
-                client.1,
-                ptcl_ver.0,
-                ptcl_ver.1
-            );
-            return Ordering::Less;
-        }
-        _ => {
-            if client.1.cmp(&ptcl_ver.1) == Ordering::Greater {
-                warn!(
-                    "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
-                    peer.ip(),
-                    peer.port(),
-                    client.0,
-                    client.1,
-                    ptcl_ver.0,
-                    ptcl_ver.1
-                );
+    if client.0 == 0 || ptcl_ver[0] == 0 {
+        match client.1.cmp(&ptcl_ver[1]) {
+            Ordering::Greater => {
+                log_incompatibility(client, peer, ptcl_ver);
                 return Ordering::Greater;
+            }
+            Ordering::Less => {
+                log_incompatibility(client, peer, ptcl_ver);
+                return Ordering::Less;
+            }
+            _ => {
+                if client.2.cmp(&ptcl_ver[2]) == Ordering::Greater {
+                    log_incompatibility(client, peer, ptcl_ver);
+                    return Ordering::Greater;
+                }
+            }
+        }
+    } else {
+        match client.0.cmp(&ptcl_ver[0]) {
+            Ordering::Greater => {
+                log_incompatibility(client, peer, ptcl_ver);
+                return Ordering::Greater;
+            }
+            Ordering::Less => {
+                log_incompatibility(client, peer, ptcl_ver);
+                return Ordering::Less;
+            }
+            _ => {
+                if client.1.cmp(&ptcl_ver[1]) == Ordering::Greater {
+                    log_incompatibility(client, peer, ptcl_ver);
+                    return Ordering::Greater;
+                }
             }
         }
     }
     Ordering::Equal
+}
+
+fn log_incompatibility(client: (u32, u32, u32), peer: std::net::SocketAddr, ptcl_ver: Vec<u32>) {
+    if client.0 == 0 || ptcl_ver[0] == 0 {
+        warn!(
+            "Connection from {}:{} used an incompatible protocol: {}.{}.{}, expected {}.{}.{}",
+            peer.ip(),
+            peer.port(),
+            client.0,
+            client.1,
+            client.2,
+            ptcl_ver[0],
+            ptcl_ver[1],
+            ptcl_ver[2]
+        );
+    } else {
+        warn!(
+            "Connection from {}:{} used an incompatible protocol: {}.{}, expected {}.{}",
+            peer.ip(),
+            peer.port(),
+            client.0,
+            client.1,
+            ptcl_ver[0],
+            ptcl_ver[1]
+        );
+    }
+}
+
+pub fn trace_subscription(verbose_level: u8) {
+    let log_level = match verbose_level {
+        0 => Level::INFO,
+        1 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(log_level)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap_or_else(|_| {
+        tracing_subscriber::fmt().init();
+    });
+}
+
+pub mod status {
+    pub const TEST_NOT_IMPLEMENTED: u32 = 0;
+    pub const SUCCESS: u32 = 200;
+    pub const NON_AUTHORITATIVE: u32 = 203;
+    pub const PERMANENT_REDIRECT: u32 = 301;
+    pub const FOUND: u32 = 302;
+    pub const BAD_REQUEST: u32 = 400;
+    pub const TOO_SMALL: u32 = 402;
+    pub const FORBIDDEN: u32 = 403;
+    pub const NOT_FOUND: u32 = 404;
+    pub const GONE: u32 = 410;
+    pub const MISDIRECTED: u32 = 421;
+    pub const UNPROCESSABLE: u32 = 422;
+    pub const UPGRADE_REQUIRED: u32 = 426;
+    pub const DOWNGRADE_REQUIRED: u32 = 427;
+    pub const NOT_IMPLEMENTED: u32 = 501;
+}
+
+pub fn get_config_dir(applet: &str) -> Option<PathBuf> {
+    ProjectDirs::from("com", "DitherDude", applet)
+        .map(|proj_dirs| proj_dirs.config_dir().to_path_buf())
+}
+
+pub fn fqdn_to_upe(address: &str) -> (String, Option<u16>, String) {
+    let raw = address.strip_prefix("web://").unwrap_or(address);
+    let (fqdn, endpoint) = raw.split_once('/').unwrap_or((raw, ""));
+    let (fqdn, port) = fqdn.split_once(':').unwrap_or((fqdn, ""));
+    (fqdn.to_string(), port.parse().ok(), endpoint.to_string())
+}
+
+pub mod sql_cols {
+    #[derive(sqlx::FromRow)]
+    pub struct Count {
+        pub count: i32,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct DomainRecord {
+        pub domain_ip: Option<String>,
+        pub domain_port: Option<u16>,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct DNSRecord {
+        pub dns_ip: Option<String>,
+        pub dns_port: Option<u16>,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct ProviderRecord {
+        pub domain_ip: Option<String>,
+        pub domain_port: Option<u16>,
+        pub dns_ip: Option<String>,
+        pub dns_port: Option<u16>,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct EphemeralRecord {
+        pub id: i64,
+        pub url: String,
+        pub ip: String,
+    }
 }
