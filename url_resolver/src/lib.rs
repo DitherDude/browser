@@ -2,7 +2,7 @@ use async_std::task;
 use futures::{FutureExt, select};
 use std::{cmp::Ordering, env, net::TcpStream};
 use tracing::{debug, error, info, trace, warn};
-use utils::{receive_data, send_data, status};
+use utils::{fqdn_to_upe, receive_data, send_data, status};
 
 const DNS_IP: &str = "0.0.0.0:6202";
 const CACHER_IP: &str = "0.0.0.0:6203";
@@ -40,7 +40,7 @@ pub async fn resolve(
             if result.is_some() {
                 info!("Cache handle returned first");
                 return_data = result.clone();
-                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap().0, dns_handle)));}
+                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap(), dns_handle)));}
             }
             else {
                 warn!("Cache handle returned None! Fallback to DNS handle.");
@@ -59,7 +59,7 @@ pub async fn resolve(
             if result.is_some() {
                 info!("DNS handle returned first");
                 return_data = result.clone();
-                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap().0, cache_handle)));}
+                if integrity_check {comparison = Some(task::spawn(compare_results(result.unwrap(), cache_handle)));}
             }
             else {
                 warn!("DNS handle returned None! Fallback to cache handle.");
@@ -76,7 +76,7 @@ pub async fn resolve(
     };
     if data.is_some() {
         let response = data.unwrap();
-        result = format!("{}/{}", response.0, response.1);
+        result = response;
     } else {
         error!("Unable to resolve {}.", dest_addr);
     }
@@ -86,14 +86,8 @@ pub async fn resolve(
     result
 }
 
-fn address_splitter(address: &str) -> (String, String) {
-    let addr = address.strip_prefix("web://").unwrap_or(address);
-    let (fqdn, endpoint) = addr.split_once('/').unwrap_or((addr, ""));
-    (fqdn.to_string(), endpoint.to_string())
-}
-
-pub async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<(String, String)> {
-    let (dest_fqdn, dest_endpoint) = address_splitter(dest_addr);
+pub async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<String> {
+    let (dest_url, _, _) = fqdn_to_upe(dest_addr);
     if dns_ip != String::new() {
         trace!("Attempting to resolve DNS Server {}", dns_ip);
         let Ok(stream) = TcpStream::connect(dns_ip) else {
@@ -101,18 +95,18 @@ pub async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<(String, String)>
             return None;
         };
         info!("Connected to {}", dns_ip);
-        debug!("Attempting to resolve {}", dest_fqdn);
-        let dest_ip = dns_resolve(&stream, &dest_fqdn, "", dns_ip, &["".to_string()]);
+        debug!("Attempting to resolve {}", dest_url);
+        let dest_ip = dns_resolve(&stream, &dest_url, "", dns_ip, &["".to_string()]);
         info!(
             "Resolved {} to {}!",
-            dest_fqdn,
+            dest_url,
             dest_ip.clone().unwrap_or_default()
         );
         if let Some(dest_ip) = dest_ip {
             return if dest_ip == String::new() {
                 None
             } else {
-                Some((dest_ip, dest_endpoint))
+                Some(dest_ip)
             };
         }
     }
@@ -241,8 +235,8 @@ fn dns_resolve(
     None
 }
 
-async fn cache_task(cacher_ip: &str, dest_addr: &str) -> Option<(String, String)> {
-    let (dest_fqdn, dest_endpoint) = address_splitter(dest_addr);
+async fn cache_task(cacher_ip: &str, dest_addr: &str) -> Option<String> {
+    let (dest_url, _, _) = fqdn_to_upe(dest_addr);
     if cacher_ip != String::new() {
         trace!("Contacting DNS Cacher {}", cacher_ip);
         let Ok(stream) = TcpStream::connect(cacher_ip) else {
@@ -250,18 +244,18 @@ async fn cache_task(cacher_ip: &str, dest_addr: &str) -> Option<(String, String)
             return None;
         };
         info!("Connected to {}", cacher_ip);
-        debug!("Locating {}", dest_fqdn);
-        let dest_ip = cache_resolve(&stream, &dest_fqdn, cacher_ip);
+        debug!("Locating {}", dest_url);
+        let dest_ip = cache_resolve(&stream, &dest_url, cacher_ip);
         info!(
             "Resolved {} to {}!",
-            dest_fqdn,
+            dest_url,
             dest_ip.clone().unwrap_or_default()
         );
         if let Some(dest_ip) = dest_ip {
             return if dest_ip == String::new() {
                 None
             } else {
-                Some((dest_ip, dest_endpoint))
+                Some(dest_ip)
             };
         }
     }
@@ -325,56 +319,12 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
     None
 }
 
-// async fn get_data(address: (String, String), stacks: &str) -> Option<Vec<u8>> {
-//     let Ok(stream) = TcpStream::connect(&address.0) else {
-//         error!("Failed to connect to {}!", &address.0);
-//         return None;
-//     };
-//     let mut payload = PTCL_VER.0.to_le_bytes().to_vec();
-//     payload.extend_from_slice(&PTCL_VER.1.to_le_bytes());
-//     payload.extend_from_slice(&PTCL_VER.2.to_le_bytes());
-//     payload.extend_from_slice(stacks.as_bytes());
-//     payload.extend_from_slice("/".as_bytes());
-//     payload.extend_from_slice(address.1.as_bytes());
-//     send_data(&payload, &stream);
-//     let response = receive_data(&stream);
-//     match response.len() {
-//         4 => {
-//             decode_error(&response.try_into().unwrap_or_default());
-//         }
-//         0..9 => {
-//             error!("Server send an invalid response.");
-//             return None;
-//         }
-//         _ => {
-//             match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-//                 status::SUCCESS => {
-//                     println!(
-//                         "Server responsed with protocol {}",
-//                         String::from_utf8_lossy(&response[4..9])
-//                     );
-//                     return Some(response[9..].to_vec());
-//                 }
-//                 100 => {
-//                     // Handle extra blocks here
-//                 }
-//                 _ => {
-//                     error!("Server send an invalid response.");
-//                     return None;
-//                 }
-//             }
-//         }
-//     }
-//     // Some(receive_data(&stream))
-//     None
-// }
-
 async fn compare_results(
     complete: String,
-    future: futures::future::Fuse<task::JoinHandle<Option<(String, String)>>>,
+    future: futures::future::Fuse<task::JoinHandle<Option<String>>>,
 ) {
     let result = future.await;
-    if result.is_some() && result.unwrap().0 != complete {
+    if result.is_some() && result.unwrap() != complete {
         error!("DNS Server and DNS Cacher returned different results!");
         //report to DNS cacher that its information is outdated
     }

@@ -8,7 +8,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, net::TcpStream, path};
 use tracing::{debug, error, info, trace, warn};
 use url_resolver::{decode_error, dns_task, parse_md, resolve};
-use utils::{get_config_dir, receive_data, send_data, sql_cols, status, trace_subscription};
+use utils::{
+    fqdn_to_upe, get_config_dir, receive_data, send_data, sql_cols, status, trace_subscription,
+};
 const APP_ID: &str = "dither.browser";
 const PROJ_NAME: &str = "Browser";
 
@@ -117,17 +119,12 @@ async fn try_cache_webpage(
     if entry.text().is_empty() {
         return Ok(());
     }
-    let text = entry.text();
-    let text = text.strip_prefix("web://").unwrap_or(&text);
-    let (url, endpoint) = text.split_once('/').unwrap_or((text, ""));
-    let endpoint = endpoint.to_owned();
-    let (url, port) = url.split_once(':').unwrap_or((url, ""));
-    let port = port.parse::<u16>().ok();
+    let (url, port, endpoint) = fqdn_to_upe(&entry.text());
     let mut webview = None;
     trace!("URL: {url}, Port: {port:?}, Endpoint: {endpoint}");
     if !caching {
         trace!("Caching disabled. Will resolve directly.");
-        if let Some(ip) = resolve_url(url).await {
+        if let Some(ip) = resolve_url(&url).await {
             webview = Some(draw_webpage((ip, endpoint), "MRKDN"));
         }
     } else {

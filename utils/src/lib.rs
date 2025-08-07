@@ -190,6 +190,13 @@ pub fn get_config_dir(applet: &str) -> Option<PathBuf> {
         .map(|proj_dirs| proj_dirs.config_dir().to_path_buf())
 }
 
+pub fn fqdn_to_upe(address: &str) -> (String, Option<u16>, String) {
+    let raw = address.strip_prefix("web://").unwrap_or(address);
+    let (fqdn, endpoint) = raw.split_once('/').unwrap_or((raw, ""));
+    let (fqdn, port) = fqdn.split_once(':').unwrap_or((fqdn, ""));
+    (fqdn.to_string(), port.parse().ok(), endpoint.to_string())
+}
+
 pub mod sql_cols {
     #[derive(sqlx::FromRow)]
     pub struct Count {
