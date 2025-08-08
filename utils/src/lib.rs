@@ -182,7 +182,31 @@ pub mod status {
     pub const UNPROCESSABLE: u32 = 422;
     pub const UPGRADE_REQUIRED: u32 = 426;
     pub const DOWNGRADE_REQUIRED: u32 = 427;
+    pub const HOST_UNREACHABLE: u32 = 432;
     pub const NOT_IMPLEMENTED: u32 = 501;
+    pub const BAD_RESPONSE: u32 = 512;
+    pub fn decode(response: &u32) -> String {
+        String::from(match *response {
+            TEST_NOT_IMPLEMENTED => "[TEST] Not implemented.",
+            SUCCESS => "Server completed request successfully.",
+            NON_AUTHORITATIVE => "Response doesn't resemble intended data.",
+            PERMANENT_REDIRECT => "Server has moved.",
+            FOUND => "Client expected additional requests.",
+            BAD_REQUEST => "Bad request.",
+            TOO_SMALL => "Payload too small.",
+            FORBIDDEN => "Forbidden action.",
+            NOT_FOUND => "Resource not found.",
+            GONE => "Server completed response early.",
+            MISDIRECTED => "Server could not complete task.",
+            UNPROCESSABLE => "Unprocessable request.",
+            UPGRADE_REQUIRED => "Client program upgrade required.",
+            DOWNGRADE_REQUIRED => "Client program downgrade required.",
+            HOST_UNREACHABLE => "No route to host",
+            NOT_IMPLEMENTED => "Operation not implemented.",
+            BAD_RESPONSE => "Server sent unexpected response.",
+            _ => "Communication fault.",
+        })
+    }
 }
 
 pub fn get_config_dir(applet: &str) -> Option<PathBuf> {

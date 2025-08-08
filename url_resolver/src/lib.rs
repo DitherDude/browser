@@ -12,7 +12,7 @@ pub async fn resolve(
     integrity_check: Option<bool>,
     dns_ip: Option<&str>,
     cacher_ip: Option<&str>,
-) -> String {
+) -> (String, u32) {
     let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
         .map(|f| match f.parse::<u32>() {
@@ -26,7 +26,7 @@ pub async fn resolve(
     let dns_ip = dns_ip.unwrap_or(DNS_IP).to_owned();
     let cacher_ip = cacher_ip.unwrap_or(CACHER_IP).to_owned();
     let integrity_check = integrity_check.unwrap_or(false);
-    let mut result = String::new();
+    let mut result = (String::new(), status::HOST_UNREACHABLE);
     let dest_addr_clone = dest_addr.to_owned();
     let mut cache_handle =
         task::spawn(async move { cache_task(&cacher_ip, &dest_addr_clone).await }).fuse();
@@ -36,17 +36,17 @@ pub async fn resolve(
     let mut comparison = None;
     let data = select! {
         result = cache_handle => {
-            let mut return_data = None;
-            match result {
+            let mut return_data = (None, result.1);
+            match result.0 {
                 Some(address) => {
                     info!("Cache handle returned first");
-                    return_data = Some(address.clone());
+                    return_data.0 = Some(address.clone());
                     if integrity_check {comparison = Some(task::spawn(compare_results(address, dns_handle)));}
                 }
                 None => {
                     warn!("Cache handle returned None! Fallback to DNS handle.");
                     let dns_res = dns_handle.await;
-                    if dns_res.is_some() {
+                    if dns_res.0.is_some() {
                         return_data = dns_res;
                     }
                     else {
@@ -57,17 +57,17 @@ pub async fn resolve(
             return_data
         }
         result = dns_handle => {
-            let mut return_data = None;
-            match result {
+            let mut return_data = (None, result.1);
+            match result.0 {
                 Some(address) => {
                     info!("DNS handle returned first");
-                    return_data = Some(address.clone());
+                    return_data.0 = Some(address.clone());
                     if integrity_check {comparison = Some(task::spawn(compare_results(address, cache_handle)));}
                 }
                 None => {
                     warn!("DNS handle returned None! Fallback to cache handle.");
                     let cache_res = cache_handle.await;
-                    if cache_res.is_some() {
+                    if cache_res.0.is_some() {
                         return_data = cache_res;
                     }
                     else {
@@ -78,10 +78,9 @@ pub async fn resolve(
             return_data
         }
     };
-    match data {
-        Some(data) => {
-            let response = data;
-            result = response;
+    match data.0 {
+        Some(response) => {
+            result = (response, data.1);
         }
         None => error!("Unable to resolve {}.", dest_addr),
     }
@@ -93,31 +92,31 @@ pub async fn resolve(
     result
 }
 
-pub async fn dns_task(dns_ip: &str, dest_addr: &str) -> Option<String> {
+pub async fn dns_task(dns_ip: &str, dest_addr: &str) -> (Option<String>, u32) {
     let (dest_url, _, _) = fqdn_to_upe(dest_addr);
     if dns_ip != String::new() {
         trace!("Attempting to resolve DNS Server {}", dns_ip);
         let Ok(stream) = TcpStream::connect(dns_ip) else {
             warn!("Failed to resolve to DNS Server {}!", dns_ip);
-            return None;
+            return (None, status::HOST_UNREACHABLE);
         };
         info!("Connected to {}", dns_ip);
         debug!("Attempting to resolve {}", dest_url);
-        let dest_ip = dns_resolve(&stream, &dest_url, "", dns_ip, &["".to_string()]);
+        let dest = dns_resolve(&stream, &dest_url, "", dns_ip, &["".to_string()]);
         info!(
             "Resolved {} to {}!",
             dest_url,
-            dest_ip.clone().unwrap_or_default()
+            dest.clone().0.unwrap_or_default()
         );
-        if let Some(dest_ip) = dest_ip {
-            return if dest_ip == String::new() {
-                None
+        if let Some(dest_ip) = dest.0 {
+            if dest_ip == String::new() {
+                return (None, dest.1);
             } else {
-                Some(dest_ip)
+                return (Some(dest_ip), dest.1);
             };
         }
     }
-    None
+    (None, status::HOST_UNREACHABLE)
 }
 
 fn dns_resolve(
@@ -126,7 +125,7 @@ fn dns_resolve(
     prev: &str,
     dns_ip: &str,
     routes: &[String],
-) -> Option<String> {
+) -> (Option<String>, u32) {
     let block = destination.split('.').next_back().unwrap_or_default();
     let next_prev = ".".to_owned() + block + prev;
     let is_last_block = block == destination;
@@ -150,21 +149,21 @@ fn dns_resolve(
     match response.len().cmp(&4) {
         Ordering::Less => {
             error!("Server send an invalid response.");
-            return None;
+            return (None, status::BAD_RESPONSE);
         }
         Ordering::Equal => {
-            decode_error(&response.try_into().unwrap_or_default());
-            return None;
+            return (None, u32::from_le_bytes(response.try_into().unwrap()));
         }
         _ => {}
     }
-    match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
+    let statuscode = u32::from_le_bytes(response[0..4].try_into().unwrap());
+    match statuscode {
         status::SUCCESS => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
             if !is_last_block {
                 warn!("DNS resolved to destination {} early.", fqdn);
             }
-            return Some(fqdn.into_owned());
+            return (Some(fqdn.into_owned()), statuscode);
         }
         status::NON_AUTHORITATIVE => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
@@ -172,7 +171,7 @@ fn dns_resolve(
                 "DNS fallback configured to correct FQN {} where doesn't exist.",
                 fqdn
             );
-            return Some(fqdn.into_owned());
+            return (Some(fqdn.into_owned()), statuscode);
         }
         status::PERMANENT_REDIRECT => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
@@ -180,7 +179,7 @@ fn dns_resolve(
             trace!("Attempting to connect to new DNS Server {}", fqdn);
             let Ok(newstream) = TcpStream::connect(fqdn.to_string()) else {
                 error!("Failed to resolve new DNS Server {}!", fqdn);
-                return None;
+                return (None, statuscode);
             };
             info!("Connected to {}", fqdn);
             return dns_resolve(&newstream, destination, prev, &fqdn, routes);
@@ -196,7 +195,7 @@ fn dns_resolve(
                     error!(
                         "DNS redirection has looped. Please notify DNS provider of misconfiguration."
                     );
-                    return None;
+                    return (None, statuscode);
                 }
             }
             let mut routes = routes.to_vec();
@@ -217,7 +216,7 @@ fn dns_resolve(
             debug!("Passing {} to {}", newdestination, &fqdn);
             let Ok(newstream) = TcpStream::connect(fqdn.to_string()) else {
                 error!("Failed to resolve intermediary DNS {}!", fqdn);
-                return None;
+                return (None, statuscode);
             };
             debug!("Attempting to resolve {}", newdestination);
             return dns_resolve(&newstream, &newdestination, &next_prev, &fqdn, &routes);
@@ -227,7 +226,7 @@ fn dns_resolve(
             if !is_last_block {
                 warn!("Reached end of DNS chain early! Rectifying FQN as {}", fqdn);
             }
-            return Some(fqdn.into_owned());
+            return (Some(fqdn.into_owned()), statuscode);
         }
         status::MISDIRECTED => {
             error!("DNS Server couldn't resolve {}.", next_prev);
@@ -239,37 +238,37 @@ fn dns_resolve(
             );
         }
     }
-    None
+    (None, status::HOST_UNREACHABLE)
 }
 
-async fn cache_task(cacher_ip: &str, dest_addr: &str) -> Option<String> {
+async fn cache_task(cacher_ip: &str, dest_addr: &str) -> (Option<String>, u32) {
     let (dest_url, _, _) = fqdn_to_upe(dest_addr);
     if cacher_ip != String::new() {
         trace!("Contacting DNS Cacher {}", cacher_ip);
         let Ok(stream) = TcpStream::connect(cacher_ip) else {
             warn!("Failed to contact DNS Cacher {}!", cacher_ip);
-            return None;
+            return (None, status::HOST_UNREACHABLE);
         };
         info!("Connected to {}", cacher_ip);
         debug!("Locating {}", dest_url);
-        let dest_ip = cache_resolve(&stream, &dest_url, cacher_ip);
+        let dest = cache_resolve(&stream, &dest_url, cacher_ip);
         info!(
             "Resolved {} to {}!",
             dest_url,
-            dest_ip.clone().unwrap_or_default()
+            dest.clone().0.unwrap_or_default()
         );
-        if let Some(dest_ip) = dest_ip {
-            return if dest_ip == String::new() {
-                None
+        if let Some(dest_ip) = dest.0 {
+            if dest_ip == String::new() {
+                return (None, dest.1);
             } else {
-                Some(dest_ip)
+                return (Some(dest_ip), dest.1);
             };
         }
     }
-    None
+    (None, status::HOST_UNREACHABLE)
 }
 
-fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<String> {
+fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> (Option<String>, u32) {
     let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
         .map(|f| match f.parse::<u32>() {
@@ -289,18 +288,18 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
     match response.len().cmp(&4) {
         Ordering::Less => {
             error!("Server send an invalid response.");
-            return None;
+            return (None, status::BAD_RESPONSE);
         }
         Ordering::Equal => {
-            decode_error(&response.try_into().unwrap_or_default());
-            return None;
+            return (None, u32::from_le_bytes(response.try_into().unwrap()));
         }
         _ => {}
     }
-    match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
+    let statuscode = u32::from_le_bytes(response[0..4].try_into().unwrap());
+    match statuscode {
         status::SUCCESS => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
-            return Some(fqdn.into_owned());
+            return (Some(fqdn.into_owned()), statuscode);
         }
         status::PERMANENT_REDIRECT => {
             let fqdn = String::from_utf8_lossy(&response[4..]);
@@ -308,7 +307,7 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
             trace!("Attempting to connect to new DNS Cacher {}", fqdn);
             let Ok(newstream) = TcpStream::connect(fqdn.to_string()) else {
                 error!("Failed to resolve new DNS Cacher {}!", fqdn);
-                return None;
+                return (None, statuscode);
             };
             info!("Connected to {}", fqdn);
             return cache_resolve(&newstream, destination, &fqdn);
@@ -323,32 +322,17 @@ fn cache_resolve(stream: &TcpStream, destination: &str, dns_ip: &str) -> Option<
             );
         }
     }
-    None
+    (None, status::HOST_UNREACHABLE)
 }
 
 async fn compare_results(
     complete: String,
-    future: futures::future::Fuse<task::JoinHandle<Option<String>>>,
+    future: futures::future::Fuse<task::JoinHandle<(Option<String>, u32)>>,
 ) {
-    let result = future.await;
+    let result = future.await.0;
     if result.is_some() && result.unwrap() != complete {
         error!("DNS Server and DNS Cacher returned different results!");
         //report to DNS cacher that its information is outdated
-    }
-}
-
-pub fn decode_error(response: &[u8; 4]) {
-    match u32::from_le_bytes(*response) {
-        status::TEST_NOT_IMPLEMENTED => error!("[TESTING] Not implemented."),
-        status::BAD_REQUEST => error!("Bad request."),
-        status::TOO_SMALL => error!("Payload too small."),
-        status::FORBIDDEN => error!("Forbidden action."),
-        status::NOT_FOUND => error!("Resource not found."),
-        status::UNPROCESSABLE => error!("Unprocessable request."),
-        status::UPGRADE_REQUIRED => error!("Upgrade required."),
-        status::DOWNGRADE_REQUIRED => error!("Downgrade required."),
-        status::NOT_IMPLEMENTED => error!("Operation not implemented."),
-        _ => error!("Communication fault."),
     }
 }
 

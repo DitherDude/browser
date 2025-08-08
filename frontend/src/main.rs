@@ -7,7 +7,7 @@ use gtk::{
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, net::TcpStream, path};
 use tracing::{debug, error, info, trace, warn};
-use url_resolver::{decode_error, dns_task, parse_md, resolve};
+use url_resolver::{dns_task, parse_md, resolve};
 use utils::{
     fqdn_to_upe, get_config_dir, receive_data, send_data, sql_cols, status, trace_subscription,
 };
@@ -48,6 +48,14 @@ fn build_ui(app: &Application, caching: bool) {
         .build();
     let webview = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+    let scrolled_window = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_width(400)
+        .min_content_height(300)
         .build();
     let window = ApplicationWindow::builder()
         .application(app)
@@ -64,8 +72,9 @@ fn build_ui(app: &Application, caching: bool) {
         .valign(gtk::Align::Start)
         .key_capture_widget(&window)
         .build();
+    scrolled_window.set_child(Some(&webview));
     widgets.append(&search_bar);
-    widgets.append(&webview);
+    widgets.append(&scrolled_window);
     window.set_titlebar(Some(&header_bar));
     search_button
         .bind_property("active", &search_bar, "search-mode-enabled")
@@ -119,12 +128,15 @@ async fn try_cache_webpage(
     if entry.text().is_empty() {
         return Ok(());
     }
+    let mut statuscode = status::HOST_UNREACHABLE;
     let (url, port, endpoint) = fqdn_to_upe(&entry.text());
     let mut webview = None;
     trace!("URL: {url}, Port: {port:?}, Endpoint: {endpoint}");
     if !caching {
         trace!("Caching disabled. Will resolve directly.");
-        if let Some(ip) = resolve_url(&url).await {
+        let res = resolve_url(&url).await;
+        statuscode = res.1;
+        if let Some(ip) = res.0 {
             webview = Some(draw_webpage((ip, endpoint), "MRKDN"));
         }
     } else {
@@ -172,7 +184,8 @@ async fn try_cache_webpage(
                 let dest = if lookahead.is_empty() {
                     Some(ip)
                 } else {
-                    dns_task(&ip, &lookahead).await
+                    let res = dns_task(&ip, &lookahead).await;
+                    res.0
                 };
                 let dest = if dest.is_some() && port.is_some() {
                     Some(format!(
@@ -187,7 +200,9 @@ async fn try_cache_webpage(
                     Some(dest) => {
                         webview = Some(draw_webpage((dest.clone(), endpoint.clone()), "MRKDN"));
                         verified_url = Some(dest.clone());
-                        if let Some(validated_url) = resolve_url(&entry.text()).await {
+                        let res = resolve_url(&entry.text()).await;
+                        statuscode = res.1;
+                        if let Some(validated_url) = res.0 {
                             if dest != validated_url {
                                 error!("Cache held invalid url!");
                                 debug!(
@@ -214,7 +229,9 @@ async fn try_cache_webpage(
                     }
                     None => {
                         error!("Congrats! I have no idea how you got here.");
-                        verified_url = resolve_url(&entry.text()).await;
+                        let res = resolve_url(&entry.text()).await;
+                        statuscode = res.1;
+                        verified_url = res.0;
                         if let Some(dest) = &verified_url {
                             webview =
                                 Some(draw_webpage((dest.to_string(), endpoint.clone()), "MRKDN"));
@@ -236,7 +253,9 @@ async fn try_cache_webpage(
         if blocks.is_empty() {
             warn!("No cache found for {}!", url);
             debug!("resolving {} directly...", url);
-            verified_url = resolve_url(&entry.text()).await;
+            let res = resolve_url(&entry.text()).await;
+            statuscode = res.1;
+            verified_url = res.0;
             if let Some(dest) = &verified_url {
                 webview = Some(draw_webpage((dest.to_string(), endpoint), "MRKDN"));
             }
@@ -261,18 +280,24 @@ async fn try_cache_webpage(
         jailcell.remove(&prisoner);
     }
     if let Some(webview) = webview {
-        if let Some(webview) = webview.await {
+        let view = webview.await;
+        statuscode = view.1;
+        if let Some(webview) = view.0 {
             jailcell.append(&webview);
             return Ok(());
         }
     }
-    jailcell.append(&no_webpage());
+    jailcell.append(&no_webpage(statuscode));
     Ok(())
 }
 
-async fn resolve_url(destination: &str) -> Option<String> {
+async fn resolve_url(destination: &str) -> (Option<String>, u32) {
     let ip = resolve(destination, None, None, None).await;
-    if ip.is_empty() { None } else { Some(ip) }
+    if ip.0.is_empty() {
+        (None, ip.1)
+    } else {
+        (Some(ip.0), ip.1)
+    }
 }
 
 async fn create_cache() -> bool {
@@ -324,22 +349,27 @@ async fn create_cache() -> bool {
     true
 }
 
-async fn draw_webpage(address: (String, String), stacks: &str) -> Option<gtk::Box> {
-    match get_data(&address, stacks) {
+async fn draw_webpage(address: (String, String), stacks: &str) -> (Option<gtk::Box>, u32) {
+    let res = get_data(&address, stacks);
+    match res.0 {
         Some(data) => match data.1.as_str() {
-            "MRKDN" => parse_md(&String::from_utf8_lossy(&data.0)),
+            "MRKDN" => (parse_md(&String::from_utf8_lossy(&data.0)), res.1),
             _ => {
                 error!("Unsupported stack: {}", data.1);
-                None
+                (None, res.1)
             }
         },
-        None => None,
+        None => (None, res.1),
     }
 }
 
-fn no_webpage() -> gtk::Box {
+fn no_webpage(err: u32) -> gtk::Box {
     let label = gtk::Label::builder()
-        .label("Error retrieving webpage!")
+        .label(format!(
+            "Error retrieving webpage! {}: {}",
+            err,
+            status::decode(&err)
+        ))
         .vexpand(true)
         .css_classes(["title-1"])
         .build();
@@ -350,7 +380,8 @@ fn no_webpage() -> gtk::Box {
     webview
 }
 
-fn get_data(address: &(String, String), stacks: &str) -> Option<(Vec<u8>, String)> {
+fn get_data(address: &(String, String), stacks: &str) -> (Option<(Vec<u8>, String)>, u32) {
+    let mut statuscode = status::HOST_UNREACHABLE;
     let program_version: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
         .map(|f| match f.parse::<u32>() {
@@ -363,7 +394,7 @@ fn get_data(address: &(String, String), stacks: &str) -> Option<(Vec<u8>, String
     assert!(program_version.len() > 2);
     let Ok(stream) = TcpStream::connect(&address.0) else {
         error!("Failed to connect to {}!", &address.0);
-        return None;
+        return (None, statuscode);
     };
     let mut payload = program_version[0].to_le_bytes().to_vec();
     payload.extend_from_slice(&program_version[1].to_le_bytes());
@@ -375,22 +406,28 @@ fn get_data(address: &(String, String), stacks: &str) -> Option<(Vec<u8>, String
     let response = receive_data(&stream);
     match response.len() {
         4 => {
-            decode_error(&response.try_into().unwrap_or_default());
+            let code = u32::from_le_bytes(response.try_into().unwrap());
+            error!("{}", &status::decode(&code));
+            statuscode = code;
         }
         0..9 => {
             error!("Server send an invalid response.");
-            return None;
+            return (None, status::BAD_RESPONSE);
         }
-        _ => match u32::from_le_bytes(response[0..4].try_into().unwrap()) {
-            status::SUCCESS => {
-                let stack = String::from_utf8_lossy(&response[4..9]).to_string();
-                info!("Server responsed with protocol {}", stacks);
-                return Some((response[9..].to_vec(), stack));
+        _ => {
+            let code = u32::from_le_bytes(response[0..4].try_into().unwrap());
+            match code {
+                status::SUCCESS => {
+                    let stack = String::from_utf8_lossy(&response[4..9]).to_string();
+                    info!("Server responsed with protocol {}", stacks);
+                    return (Some((response[9..].to_vec(), stack)), code);
+                }
+                x => {
+                    error!("{}", &status::decode(&x));
+                    statuscode = x;
+                }
             }
-            _ => {
-                decode_error(&response.try_into().unwrap_or_default());
-            }
-        },
+        }
     }
-    None
+    (None, statuscode)
 }
