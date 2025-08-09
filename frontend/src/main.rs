@@ -19,21 +19,31 @@ async fn main() -> glib::ExitCode {
     let mut verbose_level = 0u8;
     let mut caching = true;
     let mut force_stacks_refresh = false;
+    let mut stacks = String::new();
     let args: Vec<String> = env::args().collect();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
                 "no-caching" => caching = false,
                 "refresh-stacks" => force_stacks_refresh = true,
+                "stacks" => stacks = args[i + 1].clone(),
                 "verbose" => verbose_level += 1,
                 _ => panic!("Pre-init failure; unknown long-name argument: {arg}"),
             }
         } else if arg.starts_with("-") {
-            let mut _argindex = i;
+            let mut argindex = i;
             for char in arg.strip_prefix("-").unwrap_or_default().chars() {
                 match char {
                     'c' => caching = false,
                     'r' => force_stacks_refresh = true,
+                    'S' => {
+                        stacks = args[argindex + 1].clone();
+                        argindex += 1;
+                    }
+                    's' => {
+                        stacks += &args[argindex + 1].clone();
+                        argindex += 1;
+                    }
                     'v' => verbose_level += 1,
                     _ => panic!("Pre-init failure; unknown short-name argument: {arg}"),
                 }
@@ -41,17 +51,23 @@ async fn main() -> glib::ExitCode {
         }
     }
     trace_subscription(verbose_level);
-    let _ = get_stacks(force_stacks_refresh).await;
+    if !compile_stacks(force_stacks_refresh).await {
+        return glib::ExitCode::FAILURE;
+    }
+    if stacks.is_empty() {
+        stacks = list_stacks().await;
+    }
+    debug!("Using stacks: {stacks}");
     if caching {
         caching = create_cache().await;
     }
     debug!("Caching enabled: {caching}");
     let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(move |app| build_ui(app, caching));
+    app.connect_activate(move |app| build_ui(app, caching, stacks.clone()));
     app.run_with_args(&[""])
 }
 
-fn build_ui(app: &Application, caching: bool) {
+fn build_ui(app: &Application, caching: bool, stacks: String) {
     let mainbox = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
@@ -114,10 +130,11 @@ fn build_ui(app: &Application, caching: bool) {
     ));
     entry.connect_activate(move |entry| {
         let entry_clone = entry.clone();
+        let stacks_clone = stacks.clone();
         let webview_weak = gtk::Box::downgrade(&webview);
         glib::MainContext::default().spawn_local(async move {
             if let Some(webview) = webview_weak.upgrade() {
-                match try_cache_webpage(&entry_clone, &webview, caching).await {
+                match try_cache_webpage(&entry_clone, &webview, caching, &stacks_clone).await {
                     Ok(_) => {}
                     Err(e) => {
                         error!("FS error: {}", e);
@@ -136,6 +153,7 @@ async fn try_cache_webpage(
     entry: &gtk::SearchEntry,
     jailcell: &gtk::Box,
     caching: bool,
+    stacks: &str,
 ) -> io::Result<()> {
     if entry.text().is_empty() {
         return Ok(());
@@ -149,7 +167,7 @@ async fn try_cache_webpage(
         let res = resolve_url(&url).await;
         statuscode = res.1;
         if let Some(ip) = res.0 {
-            webview = Some(draw_webpage((ip, endpoint), "MRKDN"));
+            webview = Some(draw_webpage((ip, endpoint), stacks));
         }
     } else {
         let config_dir = match get_config_dir(PROJ_NAME) {
@@ -210,7 +228,7 @@ async fn try_cache_webpage(
                 };
                 match dest {
                     Some(dest) => {
-                        webview = Some(draw_webpage((dest.clone(), endpoint.clone()), "MRKDN"));
+                        webview = Some(draw_webpage((dest.clone(), endpoint.clone()), stacks));
                         verified_url = Some(dest.clone());
                         let res = resolve_url(&entry.text()).await;
                         statuscode = res.1;
@@ -246,7 +264,7 @@ async fn try_cache_webpage(
                         verified_url = res.0;
                         if let Some(dest) = &verified_url {
                             webview =
-                                Some(draw_webpage((dest.to_string(), endpoint.clone()), "MRKDN"));
+                                Some(draw_webpage((dest.to_string(), endpoint.clone()), stacks));
                         }
                     }
                 }
@@ -269,7 +287,7 @@ async fn try_cache_webpage(
             statuscode = res.1;
             verified_url = res.0;
             if let Some(dest) = &verified_url {
-                webview = Some(draw_webpage((dest.to_string(), endpoint), "MRKDN"));
+                webview = Some(draw_webpage((dest.to_string(), endpoint), stacks));
             }
             lookahead = String::new();
         }
@@ -365,7 +383,7 @@ async fn create_cache() -> bool {
     true
 }
 
-async fn get_stacks(force: bool) -> bool {
+async fn compile_stacks(force: bool) -> bool {
     let config_dir = match get_config_dir(PROJ_NAME) {
         Some(dir) => dir,
         None => {
@@ -460,7 +478,46 @@ async fn get_stacks(force: bool) -> bool {
             }
         }
     }
+    error!("Undocumented failure.");
     false
+}
+
+async fn list_stacks() -> String {
+    let mut stacks = String::new();
+    let config_dir = match get_config_dir(PROJ_NAME) {
+        Some(dir) => dir,
+        None => {
+            error!("Could not determine compatable configuration directory.");
+            return stacks;
+        }
+    };
+    let dbpath = config_dir.join(path::Path::new("stacks.db"));
+    if !dbpath.exists() {
+        error!("Missing stacks DB!");
+        return stacks;
+    }
+    let pool = match SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(dbpath)
+            .create_if_missing(true),
+    )
+    .await
+    {
+        Ok(pool) => pool,
+        Err(e) => {
+            error!("Database error: {}", e);
+            return stacks;
+        }
+    };
+    if let Ok(record) = sqlx::query_as::<_, sql_cols::StackRecord>("SELECT stack FROM stacks")
+        .fetch_all(&pool)
+        .await
+    {
+        for stack in record {
+            stacks += &stack.stack;
+        }
+    };
+    stacks
 }
 
 async fn draw_webpage(address: (String, String), stacks: &str) -> (Option<gtk::Box>, u32) {

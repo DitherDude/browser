@@ -188,7 +188,7 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
 }
 
 async fn html_content(stream: &TcpStream, _destination: &str, _directory: &str) {
-    send_data(&0u32.to_le_bytes(), stream);
+    send_data(&status::TEST_NOT_IMPLEMENTED.to_le_bytes(), stream);
 }
 async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str) {
     let path = Path::new(destination);
@@ -236,7 +236,7 @@ async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str
     send_data(&payload, stream);
 }
 async fn crawl_content(stream: &TcpStream, _destination: &str, _directory: &str) {
-    send_data(&0u32.to_le_bytes(), stream);
+    send_data(&status::TEST_NOT_IMPLEMENTED.to_le_bytes(), stream);
 }
 async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
     let path = Path::new(content);

@@ -259,4 +259,9 @@ pub mod sql_cols {
         pub stack: String,
         pub library: String,
     }
+    #[derive(sqlx::FromRow)]
+
+    pub struct StackRecord {
+        pub stack: String,
+    }
 }
