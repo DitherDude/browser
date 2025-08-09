@@ -530,7 +530,7 @@ fn get_data(address: &(String, String), stacks: &str) -> (Option<(Vec<u8>, Strin
             match code {
                 status::SUCCESS => {
                     let stack = String::from_utf8_lossy(&response[4..9]).to_string();
-                    info!("Server responsed with protocol {}", stacks);
+                    info!("Server responsed with protocol {}", stack);
                     return (Some((response[9..].to_vec(), stack)), code);
                 }
                 x => {
