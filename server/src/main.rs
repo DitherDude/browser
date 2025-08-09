@@ -1,10 +1,11 @@
-use async_std::path::Path;
+use async_std::path::{Path, PathBuf};
 use std::{
     cmp::Ordering,
     env,
     fs::File,
     io::Read,
     net::{TcpListener, TcpStream},
+    path::Component,
 };
 use tracing::{debug, error, info, trace, warn};
 use utils::{receive_data, send_data, send_error, status, trace_subscription, version_compare};
@@ -191,12 +192,13 @@ async fn html_content(stream: &TcpStream, _destination: &str, _directory: &str) 
     send_data(&status::TEST_NOT_IMPLEMENTED.to_le_bytes(), stream);
 }
 async fn markdown_content(stream: &TcpStream, destination: &str, directory: &str) {
-    let path = Path::new(destination);
-    let path = Path::new(&directory).join(path);
-    if !pathcheck(&path, Path::new(directory)).await {
-        send_error(stream, status::FORBIDDEN);
-        return;
-    }
+    let path = match pathcheck(destination, Path::new(directory)) {
+        Some(res) => res,
+        _ => {
+            send_error(stream, status::NOT_FOUND);
+            return;
+        }
+    };
     if !path.is_dir().await {
         send_error(stream, status::NOT_FOUND);
         return;
@@ -239,12 +241,13 @@ async fn crawl_content(stream: &TcpStream, _destination: &str, _directory: &str)
     send_data(&status::TEST_NOT_IMPLEMENTED.to_le_bytes(), stream);
 }
 async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
-    let path = Path::new(content);
-    let path = Path::new(&directory).join(path);
-    if !pathcheck(&path, Path::new(directory)).await {
-        send_error(stream, status::FORBIDDEN);
-        return;
-    }
+    let path = match pathcheck(content, Path::new(directory)) {
+        Some(res) => res,
+        _ => {
+            send_error(stream, status::NOT_FOUND);
+            return;
+        }
+    };
     if !path.is_file().await {
         send_error(stream, status::NOT_FOUND);
         return;
@@ -276,14 +279,41 @@ async fn raw_data_content(stream: &TcpStream, content: &str, directory: &str) {
     send_data(&payload, stream);
 }
 
-async fn pathcheck(newpath: &Path, origpath: &Path) -> bool {
-    let newpath = newpath
-        .canonicalize()
-        .await
-        .unwrap_or_else(|_| newpath.to_path_buf());
-    let origpath = origpath
-        .canonicalize()
-        .await
-        .unwrap_or_else(|_| origpath.to_path_buf());
-    newpath.starts_with(&origpath)
+fn pathcheck(subpath_str: &str, origpath: &Path) -> Option<PathBuf> {
+    /*
+    The following code is not my own, but adapted slightly to match my use-case.
+
+    Project Title: tower-rs/tower-http
+    Snippet Title: build_and_validate_path
+    Author(s): carllerche and github:tower-rs:publish
+    Date: 03/Jun/2025
+    Date Accessed: 10/Aug/2025 01:30AM AEST
+    Code version: 0.6.6
+    Type: Source Code
+    Availability: https://docs.rs/tower-http/latest/src/tower_http/services/fs/serve_dir/mod.rs.html#458-483
+    Licence: MIT (docs.rs) / None (github.com)
+     */
+
+    let mut finalpath = origpath.to_path_buf();
+    let subpath = subpath_str.trim_start_matches('/');
+    let subpath = Path::new(subpath);
+    for component in subpath.components() {
+        match component {
+            Component::Normal(comp) => {
+                if Path::new(&comp)
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_)))
+                {
+                    finalpath.push(comp)
+                } else {
+                    return None;
+                }
+            }
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return None;
+            }
+        }
+    }
+    Some(finalpath)
 }
