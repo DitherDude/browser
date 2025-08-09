@@ -1,8 +1,14 @@
 use async_std::task;
 use futures::{FutureExt, select};
-use std::{cmp::Ordering, env, net::TcpStream};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use std::{
+    cmp::Ordering,
+    env,
+    net::TcpStream,
+    path::{self, PathBuf},
+};
 use tracing::{debug, error, info, trace, warn};
-use utils::{fqdn_to_upe, receive_data, send_data, status};
+use utils::{fqdn_to_upe, get_config_dir, receive_data, send_data, sql_cols, status};
 
 const DNS_IP: &str = "0.0.0.0:6202";
 const CACHER_IP: &str = "0.0.0.0:6203";
@@ -195,7 +201,7 @@ fn dns_resolve(
                     error!(
                         "DNS redirection has looped. Please notify DNS provider of misconfiguration."
                     );
-                    return (None, statuscode);
+                    return (None, status::LOOP_DETECTED);
                 }
             }
             let mut routes = routes.to_vec();
@@ -336,19 +342,61 @@ async fn compare_results(
     }
 }
 
-pub fn parse_md(elements: &str) -> Option<gtk::Box> {
-    pub fn mdparser(elements: &str) -> Option<gtk::Box> {
-        unsafe {
-            let lib = match libloading::Library::new(
-                env::consts::DLL_PREFIX.to_owned() + "mdparser." + env::consts::DLL_EXTENSION,
-            ) {
-                Ok(lib) => lib,
-                Err(_) => return None,
-            };
-            let func: libloading::Symbol<fn(elements: String) -> gtk::Box> =
-                lib.get("get_elements".as_bytes()).unwrap();
-            Some(func(elements.to_owned()))
+pub async fn parse_stack(elements: &str, stack: &str, applet: &str) -> Option<gtk::Box> {
+    let config_dir = match get_config_dir(applet) {
+        Some(dir) => dir,
+        None => return None,
+    };
+    let dbpath = config_dir.join(path::Path::new("stacks.db"));
+    let pool = match SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(dbpath)
+            .create_if_missing(false),
+    )
+    .await
+    {
+        Ok(pool) => pool,
+        Err(e) => {
+            error!("Database error: {}", e);
+            return None;
         }
+    };
+    if let Ok(Some(record)) =
+        sqlx::query_as::<_, sql_cols::StacksRecord>("SELECT * FROM stacks WHERE stack = ?")
+            .bind(stack)
+            .fetch_optional(&pool)
+            .await
+    {
+        let libloc = path::Path::new(&record.library);
+        pub fn parser(libloc: &path::Path, elements: &str) -> Option<gtk::Box> {
+            unsafe {
+                let lib = match libloading::Library::new(libloc) {
+                    Ok(lib) => lib,
+                    Err(_) => return None,
+                };
+                let func: libloading::Symbol<fn(elements: String) -> Option<gtk::Box>> =
+                    match lib.get("get_elements".as_bytes()) {
+                        Ok(data) => data,
+                        Err(_) => return None,
+                    };
+                func(elements.to_owned())
+            }
+        }
+        return parser(libloc, elements);
     }
-    mdparser(elements)
+    None
+}
+
+pub fn get_stack_info(location: &PathBuf) -> Option<String> {
+    unsafe {
+        let lib = match libloading::Library::new(location) {
+            Ok(lib) => lib,
+            Err(_) => return None,
+        };
+        let func: libloading::Symbol<fn() -> Option<String>> = match lib.get("stacks".as_bytes()) {
+            Ok(data) => data,
+            Err(_) => return None,
+        };
+        func()
+    }
 }

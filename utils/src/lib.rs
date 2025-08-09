@@ -183,7 +183,9 @@ pub mod status {
     pub const UPGRADE_REQUIRED: u32 = 426;
     pub const DOWNGRADE_REQUIRED: u32 = 427;
     pub const HOST_UNREACHABLE: u32 = 432;
+    pub const SHAT_THE_BED: u32 = 433;
     pub const NOT_IMPLEMENTED: u32 = 501;
+    pub const LOOP_DETECTED: u32 = 508;
     pub const BAD_RESPONSE: u32 = 512;
     pub fn decode(response: &u32) -> String {
         String::from(match *response {
@@ -191,18 +193,20 @@ pub mod status {
             SUCCESS => "Server completed request successfully.",
             NON_AUTHORITATIVE => "Response doesn't resemble intended data.",
             PERMANENT_REDIRECT => "Server has moved.",
-            FOUND => "Client expected additional requests.",
+            FOUND => "Server expected additional requests.",
             BAD_REQUEST => "Bad request.",
             TOO_SMALL => "Payload too small.",
             FORBIDDEN => "Forbidden action.",
             NOT_FOUND => "Resource not found.",
-            GONE => "Server completed response early.",
+            GONE => "Client expected additional requests.",
             MISDIRECTED => "Server could not complete task.",
             UNPROCESSABLE => "Unprocessable request.",
             UPGRADE_REQUIRED => "Client program upgrade required.",
             DOWNGRADE_REQUIRED => "Client program downgrade required.",
             HOST_UNREACHABLE => "No route to host",
+            SHAT_THE_BED => "Client program reached an invalid state.",
             NOT_IMPLEMENTED => "Operation not implemented.",
+            LOOP_DETECTED => "Handshake loop detected.",
             BAD_RESPONSE => "Server sent unexpected response.",
             _ => "Communication fault.",
         })
@@ -248,5 +252,11 @@ pub mod sql_cols {
         pub id: i64,
         pub url: String,
         pub ip: String,
+    }
+    #[derive(sqlx::FromRow)]
+    pub struct StacksRecord {
+        pub id: i64,
+        pub stack: String,
+        pub library: String,
     }
 }

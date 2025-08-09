@@ -7,7 +7,7 @@ use gtk::{
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, net::TcpStream, path};
 use tracing::{debug, error, info, trace, warn};
-use url_resolver::{dns_task, parse_md, resolve};
+use url_resolver::{dns_task, get_stack_info, parse_stack, resolve};
 use utils::{
     fqdn_to_upe, get_config_dir, receive_data, send_data, sql_cols, status, trace_subscription,
 };
@@ -17,10 +17,14 @@ const PROJ_NAME: &str = "Browser";
 #[async_std::main]
 async fn main() -> glib::ExitCode {
     let mut verbose_level = 0u8;
+    let mut caching = true;
+    let mut force_stacks_refresh = false;
     let args: Vec<String> = env::args().collect();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
+                "no-caching" => caching = false,
+                "refresh-stacks" => force_stacks_refresh = true,
                 "verbose" => verbose_level += 1,
                 _ => panic!("Pre-init failure; unknown long-name argument: {arg}"),
             }
@@ -28,6 +32,8 @@ async fn main() -> glib::ExitCode {
             let mut _argindex = i;
             for char in arg.strip_prefix("-").unwrap_or_default().chars() {
                 match char {
+                    'c' => caching = false,
+                    'r' => force_stacks_refresh = true,
                     'v' => verbose_level += 1,
                     _ => panic!("Pre-init failure; unknown short-name argument: {arg}"),
                 }
@@ -35,7 +41,10 @@ async fn main() -> glib::ExitCode {
         }
     }
     trace_subscription(verbose_level);
-    let caching = create_cache().await;
+    let _ = get_stacks(force_stacks_refresh).await;
+    if caching {
+        caching = create_cache().await;
+    }
     debug!("Caching enabled: {caching}");
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(move |app| build_ui(app, caching));
@@ -43,7 +52,7 @@ async fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &Application, caching: bool) {
-    let widgets = gtk::Box::builder()
+    let mainbox = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
     let webview = gtk::Box::builder()
@@ -62,7 +71,11 @@ fn build_ui(app: &Application, caching: bool) {
         .title("Browser")
         .default_height(600)
         .default_width(1000)
-        .child(&widgets)
+        .build();
+    let label = gtk::Label::builder()
+        .label("Enter URL")
+        .vexpand(true)
+        .css_classes(["title-1"])
         .build();
     let header_bar = gtk::HeaderBar::new();
     let search_button = gtk::ToggleButton::new();
@@ -72,9 +85,11 @@ fn build_ui(app: &Application, caching: bool) {
         .valign(gtk::Align::Start)
         .key_capture_widget(&window)
         .build();
+    webview.append(&label);
     scrolled_window.set_child(Some(&webview));
-    widgets.append(&search_bar);
-    widgets.append(&scrolled_window);
+    mainbox.append(&search_bar);
+    mainbox.append(&scrolled_window);
+    window.set_child(Some(&mainbox));
     window.set_titlebar(Some(&header_bar));
     search_button
         .bind_property("active", &search_bar, "search-mode-enabled")
@@ -106,11 +121,8 @@ fn build_ui(app: &Application, caching: bool) {
                     Ok(_) => {}
                     Err(e) => {
                         error!("FS error: {}", e);
-                        // label.set_text(
-                        //     &resolve_url(&entry_clone.text())
-                        //         .await
-                        //         .unwrap_or("Website not found.".to_string()),
-                        // );
+                        empty_box(&webview);
+                        webview.append(&no_webpage(status::SHAT_THE_BED));
                     }
                 }
             }
@@ -276,9 +288,7 @@ async fn try_cache_webpage(
             };
         }
     }
-    while let Some(prisoner) = jailcell.last_child() {
-        jailcell.remove(&prisoner);
-    }
+    empty_box(jailcell);
     if let Some(webview) = webview {
         let view = webview.await;
         statuscode = view.1;
@@ -297,6 +307,12 @@ async fn resolve_url(destination: &str) -> (Option<String>, u32) {
         (None, ip.1)
     } else {
         (Some(ip.0), ip.1)
+    }
+}
+
+fn empty_box(jailcell: &gtk::Box) {
+    while let Some(prisoner) = jailcell.last_child() {
+        jailcell.remove(&prisoner);
     }
 }
 
@@ -349,16 +365,111 @@ async fn create_cache() -> bool {
     true
 }
 
+async fn get_stacks(force: bool) -> bool {
+    let config_dir = match get_config_dir(PROJ_NAME) {
+        Some(dir) => dir,
+        None => {
+            error!("Could not determine compatable configuration directory.");
+            return false;
+        }
+    };
+    if let Ok(app_loc) = std::env::current_exe() {
+        if let Some(app_dir) = app_loc.parent() {
+            let dbpath = config_dir.join(path::Path::new("stacks.db"));
+            if dbpath.exists() {
+                if !force {
+                    trace!("Found stacks DB!");
+                    return true;
+                }
+                warn!("Overwriting stacks DB");
+                match fs::remove_file(&dbpath) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("FS error: {}", e);
+                        return false;
+                    }
+                };
+            }
+            debug!("Generating stacks database...");
+            let pool = match SqlitePool::connect_with(
+                SqliteConnectOptions::new()
+                    .filename(dbpath)
+                    .create_if_missing(true),
+            )
+            .await
+            {
+                Ok(pool) => pool,
+                Err(e) => {
+                    error!("Database error: {}", e);
+                    return false;
+                }
+            };
+            match sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS stacks
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stack TEXT UNIQUE NOT NULL,
+                    library TEXT UNIQUE NOT NULL);
+                "#,
+            )
+            .execute(&pool)
+            .await
+            {
+                Ok(_) => {
+                    let files = match fs::read_dir(app_dir) {
+                        Ok(dir) => dir,
+                        Err(e) => {
+                            error!("FS error: {}", e);
+                            return false;
+                        }
+                    };
+                    for file in files.flatten() {
+                        let filerelname = file.file_name().to_string_lossy().to_string();
+                        let filefullname = file
+                            .path()
+                            .canonicalize()
+                            .unwrap_or(file.path())
+                            .to_string_lossy()
+                            .to_string();
+                        if filerelname.starts_with(std::env::consts::DLL_PREFIX)
+                            && filerelname.ends_with(std::env::consts::DLL_SUFFIX)
+                        {
+                            if let Some(stack) = get_stack_info(&file.path()) {
+                                match sqlx::query(
+                                    r#"INSERT INTO stacks (stack, library) VALUES (?, ?)"#,
+                                )
+                                .bind(&stack)
+                                .bind(&filefullname)
+                                .execute(&pool)
+                                .await
+                                {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        error!("Database error: {}", e);
+                                        return false;
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    return true;
+                }
+                Err(e) => {
+                    error!("Database error: {}", e);
+                }
+            }
+        }
+    }
+    false
+}
+
 async fn draw_webpage(address: (String, String), stacks: &str) -> (Option<gtk::Box>, u32) {
     let res = get_data(&address, stacks);
     match res.0 {
-        Some(data) => match data.1.as_str() {
-            "MRKDN" => (parse_md(&String::from_utf8_lossy(&data.0)), res.1),
-            _ => {
-                error!("Unsupported stack: {}", data.1);
-                (None, res.1)
-            }
-        },
+        Some(data) => (
+            parse_stack(&String::from_utf8_lossy(&data.0), &data.1, PROJ_NAME).await,
+            res.1,
+        ),
         None => (None, res.1),
     }
 }
@@ -371,7 +482,7 @@ fn no_webpage(err: u32) -> gtk::Box {
             status::decode(&err)
         ))
         .vexpand(true)
-        .css_classes(["title-1"])
+        .css_classes(["title-1", "warning"])
         .build();
     let webview = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
