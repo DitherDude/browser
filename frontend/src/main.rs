@@ -131,15 +131,22 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
     entry.connect_activate(move |entry| {
         let entry_clone = entry.clone();
         let stacks_clone = stacks.clone();
-        let webview_weak = gtk::Box::downgrade(&webview);
+        let scrolled_window_weak = gtk::ScrolledWindow::downgrade(&scrolled_window);
         glib::MainContext::default().spawn_local(async move {
-            if let Some(webview) = webview_weak.upgrade() {
-                match try_cache_webpage(&entry_clone, &webview, caching, &stacks_clone).await {
-                    Ok(_) => {}
+            if let Some(scrolled_window) = scrolled_window_weak.upgrade() {
+                match try_cache_webpage(&entry_clone, caching, &stacks_clone).await {
+                    Ok(promise) => match promise {
+                        Some(webview) => {
+                            scrolled_window.set_child(Some(&webview));
+                        }
+                        None => {
+                            scrolled_window.set_child(Some(&no_webpage(status::HOST_UNREACHABLE)));
+                        }
+                    },
                     Err(e) => {
                         error!("FS error: {}", e);
-                        empty_box(&webview);
-                        webview.append(&no_webpage(status::SHAT_THE_BED));
+                        // empty_box(&webview);
+                        scrolled_window.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
                     }
                 }
             }
@@ -151,12 +158,11 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
 
 async fn try_cache_webpage(
     entry: &gtk::SearchEntry,
-    jailcell: &gtk::Box,
     caching: bool,
     stacks: &str,
-) -> io::Result<()> {
+) -> io::Result<Option<gtk::Box>> {
     if entry.text().is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let mut statuscode = status::HOST_UNREACHABLE;
     let (url, port, endpoint) = fqdn_to_upe(&entry.text());
@@ -306,17 +312,17 @@ async fn try_cache_webpage(
             };
         }
     }
-    empty_box(jailcell);
+    // empty_box(jailcell);
     if let Some(webview) = webview {
         let view = webview.await;
         statuscode = view.1;
         if let Some(webview) = view.0 {
-            jailcell.append(&webview);
-            return Ok(());
+            // jailcell.append(&webview);
+            return Ok(Some(webview));
         }
     }
-    jailcell.append(&no_webpage(statuscode));
-    Ok(())
+    // jailcell.append(&no_webpage(statuscode));
+    Ok(Some(no_webpage(statuscode)))
 }
 
 async fn resolve_url(destination: &str) -> (Option<String>, u32) {
@@ -328,11 +334,11 @@ async fn resolve_url(destination: &str) -> (Option<String>, u32) {
     }
 }
 
-fn empty_box(jailcell: &gtk::Box) {
-    while let Some(prisoner) = jailcell.last_child() {
-        jailcell.remove(&prisoner);
-    }
-}
+// fn empty_box(jailcell: &gtk::Box) {
+//     while let Some(prisoner) = jailcell.last_child() {
+//         jailcell.remove(&prisoner);
+//     }
+// }
 
 async fn create_cache() -> bool {
     let config_dir = match get_config_dir(PROJ_NAME) {
