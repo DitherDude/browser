@@ -77,8 +77,10 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
         .hexpand(true)
         .build();
     let scrolled_window = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .hexpand(true)
+        .vexpand(true)
         .min_content_width(400)
         .min_content_height(300)
         .build();
@@ -145,7 +147,6 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
                     },
                     Err(e) => {
                         error!("FS error: {}", e);
-                        // empty_box(&webview);
                         scrolled_window.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
                     }
                 }
@@ -312,16 +313,13 @@ async fn try_cache_webpage(
             };
         }
     }
-    // empty_box(jailcell);
     if let Some(webview) = webview {
         let view = webview.await;
         statuscode = view.1;
         if let Some(webview) = view.0 {
-            // jailcell.append(&webview);
             return Ok(Some(webview));
         }
     }
-    // jailcell.append(&no_webpage(statuscode));
     Ok(Some(no_webpage(statuscode)))
 }
 
@@ -333,12 +331,6 @@ async fn resolve_url(destination: &str) -> (Option<String>, u32) {
         (Some(ip.0), ip.1)
     }
 }
-
-// fn empty_box(jailcell: &gtk::Box) {
-//     while let Some(prisoner) = jailcell.last_child() {
-//         jailcell.remove(&prisoner);
-//     }
-// }
 
 async fn create_cache() -> bool {
     let config_dir = match get_config_dir(PROJ_NAME) {
