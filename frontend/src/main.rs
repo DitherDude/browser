@@ -57,6 +57,10 @@ async fn main() -> glib::ExitCode {
     if stacks.is_empty() {
         stacks = list_stacks().await;
     }
+    if stacks.is_empty() {
+        error!("No stacks found!");
+        return glib::ExitCode::FAILURE;
+    }
     debug!("Using stacks: {stacks}");
     if caching {
         caching = create_cache().await;
@@ -137,7 +141,7 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
         }
     ));
     let sb_clone = search_bar.clone();
-    entry.connect_activate(move |_entry| {
+    entry.connect_activate(move |_| {
         let scrolled_window_weak: glib::WeakRef<gtk::ScrolledWindow> =
             gtk::ScrolledWindow::downgrade(&scrolled_window);
         let pagecontent;
