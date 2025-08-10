@@ -1,6 +1,6 @@
 use async_std::io;
 use gtk::{
-    Application, ApplicationWindow,
+    Application, ApplicationWindow, gdk,
     glib::{self, clone},
     prelude::*,
 };
@@ -68,6 +68,7 @@ async fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &Application, caching: bool, stacks: String) {
+    load_css();
     let mainbox = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
@@ -103,6 +104,10 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
         .valign(gtk::Align::Start)
         .key_capture_widget(&window)
         .build();
+    search_bar.set_css_classes(&[""]);
+    unsafe {
+        search_bar.set_data("page-content", PageContent::Nothing);
+    }
     webview.append(&label);
     scrolled_window.set_child(Some(&webview));
     mainbox.append(&search_bar);
@@ -115,6 +120,7 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
         .bidirectional()
         .build();
     let entry = gtk::SearchEntry::new();
+    search_bar.set_child(Some(&entry));
     entry.set_hexpand(true);
     entry.connect_search_started(clone!(
         #[weak]
@@ -130,40 +136,86 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
             search_button.set_active(false);
         }
     ));
-    entry.connect_activate(move |entry| {
-        let entry_clone = entry.clone();
-        let stacks_clone = stacks.clone();
-        let scrolled_window_weak = gtk::ScrolledWindow::downgrade(&scrolled_window);
+    let sb_clone = search_bar.clone();
+    entry.connect_activate(move |_entry| {
+        let scrolled_window_weak: glib::WeakRef<gtk::ScrolledWindow> =
+            gtk::ScrolledWindow::downgrade(&scrolled_window);
+        let pagecontent;
+        unsafe {
+            pagecontent = sb_clone.steal_data("page-content");
+        }
         glib::MainContext::default().spawn_local(async move {
-            if let Some(scrolled_window) = scrolled_window_weak.upgrade() {
-                match try_cache_webpage(&entry_clone, caching, &stacks_clone).await {
-                    Ok(promise) => match promise {
-                        Some(webview) => {
-                            scrolled_window.set_child(Some(&webview));
+            if let Some(scrolledwindow) = scrolled_window_weak.upgrade() {
+                if let Some(pagecontent) = pagecontent {
+                    match pagecontent {
+                        PageContent::Page(pagedata) => {
+                            scrolledwindow.set_child(Some(&pagedata.0));
                         }
-                        None => {
-                            scrolled_window.set_child(Some(&no_webpage(status::HOST_UNREACHABLE)));
+                        PageContent::Status(err) => {
+                            scrolledwindow.set_child(Some(&no_webpage(err)));
                         }
-                    },
-                    Err(e) => {
-                        error!("FS error: {}", e);
-                        scrolled_window.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
+                        PageContent::Failure(e) => {
+                            error!("FS error: {}", e);
+                            scrolledwindow.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
+                        }
+                        _ => {}
                     }
                 }
             }
         });
     });
-    search_bar.set_child(Some(&entry));
+    entry.connect_changed(move |entry| {
+        let entry_clone = entry.clone();
+        let stacks_clone = stacks.clone();
+        let searchbar_weak = gtk::SearchBar::downgrade(&search_bar);
+        glib::MainContext::default().spawn_local(async move {
+            if let Some(searchbar) = searchbar_weak.upgrade() {
+                searchbar.set_css_classes(&[""]);
+                let buffer = try_get_webpage(&entry_clone, caching, &stacks_clone).await;
+                match &buffer {
+                    PageContent::Page(pagedata) => match pagedata.1 {
+                        status::SUCCESS => {
+                            searchbar.set_css_classes(&["greensearch"]);
+                        }
+                        _ => {
+                            searchbar.set_css_classes(&["redsearch"]);
+                        }
+                    },
+                    PageContent::Nothing => {}
+                    _ => {
+                        searchbar.set_css_classes(&["redsearch"]);
+                    }
+                }
+                unsafe {
+                    searchbar.set_data("page-content", buffer);
+                }
+            }
+        });
+    });
     window.present();
 }
 
-async fn try_cache_webpage(
-    entry: &gtk::SearchEntry,
-    caching: bool,
-    stacks: &str,
-) -> io::Result<Option<gtk::Box>> {
+fn load_css() {
+    let display = match gdk::Display::default() {
+        Some(display) => display,
+        None => {
+            error!("Couldn't connect to GDK display!");
+            return;
+        }
+    };
+    let provider = gtk::CssProvider::new();
+    let priority = gtk::STYLE_PROVIDER_PRIORITY_APPLICATION;
+    provider.load_from_bytes(&glib::Bytes::from(
+        br#"
+    .redsearch   text {color: #d41818ff;}
+    .greensearch text {color: #00a900;}"#,
+    ));
+    gtk::style_context_add_provider_for_display(&display, &provider, priority);
+}
+
+async fn try_get_webpage(entry: &gtk::SearchEntry, caching: bool, stacks: &str) -> PageContent {
     if entry.text().is_empty() {
-        return Ok(None);
+        return PageContent::Nothing;
     }
     let mut statuscode = status::HOST_UNREACHABLE;
     let (url, port, endpoint) = fqdn_to_upe(&entry.text());
@@ -180,13 +232,18 @@ async fn try_cache_webpage(
         let config_dir = match get_config_dir(PROJ_NAME) {
             Some(dir) => dir,
             None => {
-                return Err(io::Error::new(
+                return PageContent::Failure(io::Error::new(
                     io::ErrorKind::NotSeekable,
                     "Could not determine compatable configuration directory.",
                 ));
             }
         };
-        fs::create_dir_all(&config_dir)?;
+        match fs::create_dir_all(&config_dir) {
+            Ok(_) => {}
+            Err(e) => {
+                return PageContent::Failure(io::Error::other(format!("FS error: {e}")));
+            }
+        };
         let dbpath = config_dir.join(path::Path::new("cache.db"));
         let pool = match SqlitePool::connect_with(
             SqliteConnectOptions::new()
@@ -197,7 +254,7 @@ async fn try_cache_webpage(
         {
             Ok(pool) => pool,
             Err(e) => {
-                return Err(io::Error::other(format!("Database error: {e}")));
+                return PageContent::Failure(io::Error::other(format!("Database error: {e}")));
             }
         };
         trace!("Successfully connected to database");
@@ -258,7 +315,7 @@ async fn try_cache_webpage(
                                 }
                                 webview = Some(draw_webpage(
                                     (validated_url.clone(), endpoint.clone()),
-                                    "MRKDN",
+                                    stacks,
                                 ));
                                 verified_url = Some(validated_url);
                             }
@@ -317,10 +374,10 @@ async fn try_cache_webpage(
         let view = webview.await;
         statuscode = view.1;
         if let Some(webview) = view.0 {
-            return Ok(Some(webview));
+            return PageContent::Page((webview, statuscode));
         }
     }
-    Ok(Some(no_webpage(statuscode)))
+    PageContent::Status(statuscode)
 }
 
 async fn resolve_url(destination: &str) -> (Option<String>, u32) {
@@ -596,4 +653,11 @@ fn get_data(address: &(String, String), stacks: &str) -> (Option<(Vec<u8>, Strin
         }
     }
     (None, statuscode)
+}
+
+enum PageContent {
+    Page((gtk::Box, u32)),
+    Status(u32),
+    Failure(io::Error),
+    Nothing,
 }
