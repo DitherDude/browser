@@ -1,9 +1,5 @@
 use async_std::io;
-use gtk::{
-    Application, ApplicationWindow, gdk,
-    glib::{self, clone},
-    prelude::*,
-};
+use gtk::{Application, ApplicationWindow, gdk, glib, prelude::*};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, net::TcpStream, path};
 use tracing::{debug, error, info, trace, warn};
@@ -109,9 +105,6 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
         .key_capture_widget(&window)
         .build();
     search_bar.set_css_classes(&[""]);
-    unsafe {
-        search_bar.set_data("page-content", PageContent::Nothing);
-    }
     webview.append(&label);
     scrolled_window.set_child(Some(&webview));
     mainbox.append(&search_bar);
@@ -124,77 +117,124 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
         .bidirectional()
         .build();
     let entry = gtk::SearchEntry::new();
+    unsafe {
+        search_bar.set_data("page-content", PageContent::Nothing);
+        scrolled_window.set_data("text", glib::GString::new());
+        scrolled_window.set_data("curpos", 0i32);
+    }
     search_bar.set_child(Some(&entry));
     entry.set_hexpand(true);
-    entry.connect_search_started(clone!(
-        #[weak]
-        search_button,
-        move |_| {
-            search_button.set_active(true);
-        }
-    ));
-    entry.connect_stop_search(clone!(
-        #[weak]
-        search_button,
-        move |_| {
-            search_button.set_active(false);
-        }
-    ));
-    let sb_clone = search_bar.clone();
-    entry.connect_activate(move |_| {
-        let scrolled_window_weak: glib::WeakRef<gtk::ScrolledWindow> =
-            gtk::ScrolledWindow::downgrade(&scrolled_window);
-        let pagecontent;
-        unsafe {
-            pagecontent = sb_clone.steal_data("page-content");
-        }
-        glib::MainContext::default().spawn_local(async move {
-            if let Some(scrolledwindow) = scrolled_window_weak.upgrade() {
-                if let Some(pagecontent) = pagecontent {
-                    match pagecontent {
-                        PageContent::Page(pagedata) => {
-                            scrolledwindow.set_child(Some(&pagedata.0));
-                        }
-                        PageContent::Status(err) => {
-                            scrolledwindow.set_child(Some(&no_webpage(err)));
-                        }
-                        PageContent::Failure(e) => {
-                            error!("FS error: {}", e);
-                            scrolledwindow.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
-                        }
-                        _ => {}
-                    }
-                }
+    let e_weak = entry.downgrade();
+    search_bar.connect_search_mode_enabled_notify(move |searchbar| {
+        if let Some(entry) = e_weak.upgrade() {
+            if searchbar.is_search_mode() {
+                entry.set_visible(true);
+            } else {
+                entry.set_visible(false);
             }
-        });
+        }
     });
-    entry.connect_changed(move |entry| {
-        let entry_clone = entry.clone();
-        let stacks_clone = stacks.clone();
-        let searchbar_weak = gtk::SearchBar::downgrade(&search_bar);
-        glib::MainContext::default().spawn_local(async move {
-            if let Some(searchbar) = searchbar_weak.upgrade() {
-                searchbar.set_css_classes(&[""]);
-                let buffer = try_get_webpage(&entry_clone, caching, &stacks_clone).await;
-                match &buffer {
-                    PageContent::Page(pagedata) => match pagedata.1 {
-                        status::SUCCESS => {
-                            searchbar.set_css_classes(&["greensearch"]);
+    let sw_weak = scrolled_window.downgrade();
+    entry.connect_show(move |entry| unsafe {
+        if let Some(scrolledwindow) = sw_weak.upgrade() {
+            let text: glib::GString = scrolledwindow
+                .steal_data("text")
+                .unwrap_or(glib::GString::default());
+            let curpos: i32 = scrolledwindow.steal_data("curpos").unwrap_or(0i32);
+            println!("Text: {text}, Curpos: {curpos}");
+            entry.set_text(&text);
+            entry.set_position(curpos);
+        }
+    });
+    let sb_weak = search_button.downgrade();
+    entry.connect_stop_search(move |_| {
+        if let Some(button) = sb_weak.upgrade() {
+            button.set_active(false);
+        }
+    });
+    let sb_weak = search_bar.downgrade();
+    let sw_weak = scrolled_window.downgrade();
+    entry.connect_activate(move |_| {
+        if let Some(searchbar) = sb_weak.upgrade() {
+            let pagecontent;
+            unsafe {
+                pagecontent = searchbar.steal_data("page-content");
+            }
+            if let Some(scrolledwindow) = sw_weak.upgrade() {
+                glib::MainContext::default().spawn_local(async move {
+                    if let Some(pagecontent) = pagecontent {
+                        match pagecontent {
+                            PageContent::Page(pagedata) => {
+                                scrolledwindow.set_child(Some(&pagedata.0));
+                                searchbar.set_search_mode(false);
+                            }
+                            PageContent::Status(err) => {
+                                scrolledwindow.set_child(Some(&no_webpage(err)));
+                                searchbar.set_search_mode(false);
+                            }
+                            PageContent::Failure(e) => {
+                                error!("FS error: {}", e);
+                                scrolledwindow.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
+                                searchbar.set_search_mode(false);
+                            }
+                            _ => searchbar.set_css_classes(&["yellowsearch"]),
                         }
-                        _ => {
-                            searchbar.set_css_classes(&["redsearch"]);
-                        }
-                    },
-                    PageContent::Nothing => {}
-                    _ => {
-                        searchbar.set_css_classes(&["redsearch"]);
                     }
-                }
-                unsafe {
-                    searchbar.set_data("page-content", buffer);
+                });
+            }
+        }
+    });
+    let sb_weak = search_bar.downgrade();
+    let sw_weak = scrolled_window.downgrade();
+    entry.connect_changed(move |entry| {
+        if let Some(searchbar) = sb_weak.upgrade() {
+            if let Some(scrolledwindow) = sw_weak.upgrade() {
+                let entry_weak = entry.downgrade();
+                let stacks_clone = stacks.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    if let Some(entry) = entry_weak.upgrade() {
+                        if searchbar.is_search_mode() {
+                            unsafe {
+                                searchbar.set_data("page-content", PageContent::Nothing);
+                                let text = entry.text();
+                                scrolledwindow.set_data("text", text);
+                            }
+                        }
+                        searchbar.set_css_classes(&[""]);
+                        let buffer = try_get_webpage(&entry, caching, &stacks_clone).await;
+                        match &buffer {
+                            PageContent::Page(pagedata) => match pagedata.1 {
+                                status::SUCCESS => {
+                                    searchbar.set_css_classes(&["greensearch"]);
+                                }
+                                _ => {
+                                    searchbar.set_css_classes(&["redsearch"]);
+                                }
+                            },
+                            PageContent::Nothing => {}
+                            _ => {
+                                searchbar.set_css_classes(&["redsearch"]);
+                            }
+                        }
+                        unsafe {
+                            searchbar.set_data("page-content", buffer);
+                        }
+                    }
+                });
+            }
+        }
+    });
+    let sw_weak = scrolled_window.downgrade();
+    let sb_weak = search_bar.downgrade();
+    entry.connect_cursor_position_notify(move |entry| unsafe {
+        if let Some(scrolledwindow) = sw_weak.upgrade() {
+            if let Some(searchbar) = sb_weak.upgrade() {
+                if searchbar.is_search_mode() {
+                    let curpos = entry.position();
+                    scrolledwindow.set_data("curpos", curpos);
                 }
             }
-        });
+        }
     });
     window.present();
 }
@@ -211,8 +251,9 @@ fn load_css() {
     let priority = gtk::STYLE_PROVIDER_PRIORITY_APPLICATION;
     provider.load_from_bytes(&glib::Bytes::from(
         br#"
-    .redsearch   text {color: #d41818ff;}
-    .greensearch text {color: #00a900;}"#,
+    .redsearch    text {color: #d41818;}
+    .greensearch  text {color: #00a900;}
+    .yellowsearch text {color: #e38900;}"#,
     ));
     gtk::style_context_add_provider_for_display(&display, &provider, priority);
 }
