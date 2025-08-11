@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 gtk.workspace = true
+fancy-regex.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
