@@ -15,11 +15,13 @@ async fn main() -> glib::ExitCode {
     let mut verbose_level = 0u8;
     let mut caching = true;
     let mut force_stacks_refresh = false;
+    let mut data_saver = false;
     let mut stacks = String::new();
     let args: Vec<String> = env::args().collect();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with("--") {
             match arg.strip_prefix("--").unwrap_or_default() {
+                "data-saver" => data_saver = true,
                 "no-caching" => caching = false,
                 "refresh-stacks" => force_stacks_refresh = true,
                 "stacks" => stacks = args[i + 1].clone(),
@@ -31,6 +33,7 @@ async fn main() -> glib::ExitCode {
             for char in arg.strip_prefix("-").unwrap_or_default().chars() {
                 match char {
                     'c' => caching = false,
+                    'd' => data_saver = true,
                     'r' => force_stacks_refresh = true,
                     'S' => {
                         stacks = args[argindex + 1].clone();
@@ -63,11 +66,11 @@ async fn main() -> glib::ExitCode {
     }
     debug!("Caching enabled: {caching}");
     let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(move |app| build_ui(app, caching, stacks.clone()));
+    app.connect_activate(move |app| build_ui(app, caching, data_saver, stacks.clone()));
     app.run_with_args(&[""])
 }
 
-fn build_ui(app: &Application, caching: bool, stacks: String) {
+fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) {
     load_css();
     let mainbox = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -118,7 +121,11 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
         .build();
     let entry = gtk::SearchEntry::new();
     unsafe {
-        search_bar.set_data("page-content", PageContent::Nothing);
+        if data_saver {
+            scrolled_window.set_data("page-content", PageContent::Disabled);
+        } else {
+            scrolled_window.set_data("page-content", PageContent::Nothing);
+        }
         scrolled_window.set_data("text", glib::GString::new());
         scrolled_window.set_data("curpos", 0i32);
     }
@@ -141,7 +148,9 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
                 .steal_data("text")
                 .unwrap_or(glib::GString::default());
             let curpos: i32 = scrolledwindow.steal_data("curpos").unwrap_or(0i32);
-            println!("Text: {text}, Curpos: {curpos}");
+            if !data_saver {
+                scrolledwindow.set_data("page-content", PageContent::Paused);
+            }
             entry.set_text(&text);
             entry.set_position(curpos);
         }
@@ -154,16 +163,54 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
     });
     let sb_weak = search_bar.downgrade();
     let sw_weak = scrolled_window.downgrade();
-    entry.connect_activate(move |_| {
+    let stacks_point = stacks.clone();
+    entry.connect_activate(move |entry| {
         if let Some(searchbar) = sb_weak.upgrade() {
             let pagecontent;
-            unsafe {
-                pagecontent = searchbar.steal_data("page-content");
-            }
             if let Some(scrolledwindow) = sw_weak.upgrade() {
+                unsafe {
+                    pagecontent = scrolledwindow.steal_data("page-content");
+                }
+                let entry_weak = entry.downgrade();
+                let stacks_clone = stacks_point.clone();
                 glib::MainContext::default().spawn_local(async move {
                     if let Some(pagecontent) = pagecontent {
                         match pagecontent {
+                            PageContent::Paused | PageContent::Disabled => {
+                                if pagecontent == PageContent::Paused {
+                                    unsafe {
+                                        scrolledwindow
+                                            .set_data("page-content", PageContent::Nothing);
+                                    }
+                                }
+                                if let Some(entry) = entry_weak.upgrade() {
+                                    searchbar.set_css_classes(&["yellowsearch"]);
+                                    let buffer =
+                                        try_get_webpage(&entry, caching, &stacks_clone).await;
+                                    match &buffer {
+                                        PageContent::Page(pagedata) => {
+                                            scrolledwindow.set_child(Some(&pagedata.0));
+                                            searchbar.set_search_mode(false);
+                                        }
+                                        PageContent::Status(err) => {
+                                            scrolledwindow.set_child(Some(&no_webpage(*err)));
+                                            searchbar.set_search_mode(false);
+                                        }
+                                        PageContent::Failure(e) => {
+                                            error!("FS error: {}", e);
+                                            scrolledwindow
+                                                .set_child(Some(&no_webpage(status::SHAT_THE_BED)));
+                                            searchbar.set_search_mode(false);
+                                        }
+                                        _ => searchbar.set_css_classes(&["yellowsearch"]),
+                                    }
+                                    if pagecontent == PageContent::Paused {
+                                        unsafe {
+                                            scrolledwindow.set_data("page-content", buffer);
+                                        }
+                                    }
+                                }
+                            }
                             PageContent::Page(pagedata) => {
                                 scrolledwindow.set_child(Some(&pagedata.0));
                                 searchbar.set_search_mode(false);
@@ -179,6 +226,30 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
                             }
                             _ => searchbar.set_css_classes(&["yellowsearch"]),
                         }
+                    } else if let Some(entry) = entry_weak.upgrade() {
+                        searchbar.set_css_classes(&["yellowsearch"]);
+                        let buffer = try_get_webpage(&entry, caching, &stacks_clone).await;
+                        match &buffer {
+                            PageContent::Page(pagedata) => {
+                                scrolledwindow.set_child(Some(&pagedata.0));
+                                searchbar.set_search_mode(false);
+                            }
+                            PageContent::Status(err) => {
+                                scrolledwindow.set_child(Some(&no_webpage(*err)));
+                                searchbar.set_search_mode(false);
+                            }
+                            PageContent::Failure(e) => {
+                                error!("FS error: {}", e);
+                                scrolledwindow.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
+                                searchbar.set_search_mode(false);
+                            }
+                            _ => searchbar.set_css_classes(&["yellowsearch"]),
+                        }
+                        if pagecontent == Some(PageContent::Paused) {
+                            unsafe {
+                                scrolledwindow.set_data("page-content", buffer);
+                            }
+                        }
                     }
                 });
             }
@@ -187,6 +258,19 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
     let sb_weak = search_bar.downgrade();
     let sw_weak = scrolled_window.downgrade();
     entry.connect_changed(move |entry| {
+        if data_saver {
+            if let Some(searchbar) = sb_weak.upgrade() {
+                if let Some(scrolledwindow) = sw_weak.upgrade() {
+                    if searchbar.is_search_mode() {
+                        unsafe {
+                            let text = entry.text();
+                            scrolledwindow.set_data("text", text);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         if let Some(searchbar) = sb_weak.upgrade() {
             if let Some(scrolledwindow) = sw_weak.upgrade() {
                 let entry_weak = entry.downgrade();
@@ -195,12 +279,18 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
                     if let Some(entry) = entry_weak.upgrade() {
                         if searchbar.is_search_mode() {
                             unsafe {
-                                searchbar.set_data("page-content", PageContent::Nothing);
                                 let text = entry.text();
                                 scrolledwindow.set_data("text", text);
                             }
                         }
                         searchbar.set_css_classes(&[""]);
+                        unsafe {
+                            let content: Option<PageContent> =
+                                scrolledwindow.steal_data("page-content");
+                            if content == Some(PageContent::Paused) {
+                                return;
+                            }
+                        }
                         let buffer = try_get_webpage(&entry, caching, &stacks_clone).await;
                         match &buffer {
                             PageContent::Page(pagedata) => match pagedata.1 {
@@ -217,7 +307,7 @@ fn build_ui(app: &Application, caching: bool, stacks: String) {
                             }
                         }
                         unsafe {
-                            searchbar.set_data("page-content", buffer);
+                            scrolledwindow.set_data("page-content", buffer);
                         }
                     }
                 });
@@ -700,9 +790,25 @@ fn get_data(address: &(String, String), stacks: &str) -> (Option<(Vec<u8>, Strin
     (None, statuscode)
 }
 
+#[derive(Debug)]
 enum PageContent {
     Page((gtk::Box, u32)),
     Status(u32),
     Failure(io::Error),
     Nothing,
+    Paused,
+    Disabled,
+}
+
+impl PartialEq for PageContent {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (PageContent::Page(a), PageContent::Page(b)) => a == b,
+            (PageContent::Status(a), PageContent::Status(b)) => a == b,
+            (PageContent::Nothing, PageContent::Nothing) => true,
+            (PageContent::Paused, PageContent::Paused) => true,
+            (PageContent::Disabled, PageContent::Disabled) => true,
+            _ => false,
+        }
+    }
 }
