@@ -367,7 +367,7 @@ async fn try_get_webpage(entry: &gtk::SearchEntry, caching: bool, stacks: &str) 
                         };
                     }
                     None => {
-                        error!("Congrats! I have no idea how you got here.");
+                        error!("Exhausted all attempts to resolve url!");
                         let res = resolve_url(&entry.text()).await;
                         statuscode = res.1;
                         verified_url = res.0;

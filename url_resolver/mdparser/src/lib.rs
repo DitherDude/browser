@@ -101,15 +101,10 @@ fn process_attribute(markup: &str, attr: &str, len: usize, head: &str, tail: &st
         }
     };
     if let Ok(Some(captures)) = attr_re.captures(&markup.clone()) {
-        for capture in captures.iter() {
-            match capture {
-                Some(result) => {
-                    let trim = result.as_str().to_string();
-                    let trim = trim[len..trim.as_str().len() - len].to_owned();
-                    markup = markup.replace(result.as_str(), &format!("{head}{trim}{tail}"));
-                }
-                _ => (),
-            }
+        for capture in captures.iter().flatten() {
+            let trim = capture.as_str().to_string();
+            let trim = trim[len..trim.as_str().len() - len].to_owned();
+            markup = markup.replace(capture.as_str(), &format!("{head}{trim}{tail}"));
         }
     }
     markup
