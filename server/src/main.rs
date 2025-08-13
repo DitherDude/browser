@@ -143,19 +143,24 @@ async fn handle_connection(stream: TcpStream, directory: &str) {
     }
     let mut data = &data[12..];
     if data.is_empty() {
-        warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
+        trace!("Payload from {}:{} was too short.", peer.ip(), peer.port());
         send_error(&stream, status::TOO_SMALL);
         return;
     }
     let mut client_protocols = vec![[0u8; 5]];
     loop {
         if data.len() < 5 {
-            warn!("Payload from {}:{} was too short.", peer.ip(), peer.port());
+            trace!("Payload from {}:{} was too short.", peer.ip(), peer.port());
             send_error(&stream, status::TOO_SMALL);
             return;
         }
         client_protocols.push(data[0..5].try_into().unwrap_or([0u8; 5]));
         data = &data[5..];
+        if data.is_empty() {
+            trace!("Unrecognised request from {}:{}", peer.ip(), peer.port());
+            send_error(&stream, status::UNPROCESSABLE);
+            return;
+        }
         if data[0] == b'/' {
             data = data.get(1..).unwrap_or_default();
             break;
