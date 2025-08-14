@@ -120,15 +120,16 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
         .bidirectional()
         .build();
     let entry = gtk::SearchEntry::new();
-    unsafe {
-        if data_saver {
-            scrolled_window.set_data("page-content", PageContent::Disabled);
-        } else {
-            scrolled_window.set_data("page-content", PageContent::Nothing);
-        }
-        scrolled_window.set_data("text", glib::GString::new());
-        scrolled_window.set_data("curpos", 0i32);
+
+    if data_saver {
+        unsafe { scrolled_window.set_data("page-content", PageContent::Disabled) };
+    } else {
+        unsafe { scrolled_window.set_data("page-content", PageContent::Nothing) };
     }
+    unsafe {
+        scrolled_window.set_data("text", glib::GString::new());
+        scrolled_window.set_data("curpos", 0i32)
+    };
     search_bar.set_child(Some(&entry));
     entry.set_hexpand(true);
     let e_weak = entry.downgrade();
@@ -142,14 +143,16 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
         }
     });
     let sw_weak = scrolled_window.downgrade();
-    entry.connect_show(move |entry| unsafe {
+    entry.connect_show(move |entry| {
         if let Some(scrolledwindow) = sw_weak.upgrade() {
-            let text: glib::GString = scrolledwindow
-                .steal_data("text")
-                .unwrap_or(glib::GString::default());
-            let curpos: i32 = scrolledwindow.steal_data("curpos").unwrap_or(0i32);
+            let text: glib::GString = unsafe {
+                scrolledwindow
+                    .steal_data("text")
+                    .unwrap_or(glib::GString::default())
+            };
+            let curpos: i32 = unsafe { scrolledwindow.steal_data("curpos").unwrap_or(0i32) };
             if !data_saver {
-                scrolledwindow.set_data("page-content", PageContent::Paused);
+                unsafe { scrolledwindow.set_data("page-content", PageContent::Paused) };
             }
             entry.set_text(&text);
             entry.set_position(curpos);
@@ -168,9 +171,7 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
         if let Some(searchbar) = sb_weak.upgrade() {
             let pagecontent;
             if let Some(scrolledwindow) = sw_weak.upgrade() {
-                unsafe {
-                    pagecontent = scrolledwindow.steal_data("page-content");
-                }
+                pagecontent = unsafe { scrolledwindow.steal_data("page-content") };
                 let entry_weak = entry.downgrade();
                 let stacks_clone = stacks_point.clone();
                 glib::MainContext::default().spawn_local(async move {
@@ -262,8 +263,8 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
             if let Some(searchbar) = sb_weak.upgrade() {
                 if let Some(scrolledwindow) = sw_weak.upgrade() {
                     if searchbar.is_search_mode() {
+                        let text = entry.text();
                         unsafe {
-                            let text = entry.text();
                             scrolledwindow.set_data("text", text);
                         }
                     }
@@ -278,18 +279,16 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
                 glib::MainContext::default().spawn_local(async move {
                     if let Some(entry) = entry_weak.upgrade() {
                         if searchbar.is_search_mode() {
+                            let text = entry.text();
                             unsafe {
-                                let text = entry.text();
                                 scrolledwindow.set_data("text", text);
                             }
                         }
                         searchbar.set_css_classes(&[""]);
-                        unsafe {
-                            let content: Option<PageContent> =
-                                scrolledwindow.steal_data("page-content");
-                            if content == Some(PageContent::Paused) {
-                                return;
-                            }
+                        let content: Option<PageContent> =
+                            unsafe { scrolledwindow.steal_data("page-content") };
+                        if content == Some(PageContent::Paused) {
+                            return;
                         }
                         let buffer = try_get_webpage(&entry, caching, &stacks_clone).await;
                         match &buffer {
