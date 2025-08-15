@@ -5,13 +5,14 @@ members = [
     "dns_provider",
     "frontend",
     "server",
-    "url_resolver",
-    "url_resolver/mdparser",
+    "backend",
+    "stacks/mdparser",
     "utils",
 ]
 
 [workspace.dependencies]
 async-std = { version = "1.13.1", features = ["attributes"] }
+backend = { path = "backend" }
 directories = "6.0.0"
 futures = "0.3.31"
 gtk = { version = "0.10.0", package = "gtk4", features = ["v4_18"] }

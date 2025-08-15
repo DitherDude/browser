@@ -1,9 +1,9 @@
 use async_std::io;
+use backend::{dns_task, get_stack_info, parse_stack, resolve};
 use gtk::{Application, ApplicationWindow, gdk, glib, prelude::*};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, net::TcpStream, path};
 use tracing::{debug, error, info, trace, warn};
-use url_resolver::{dns_task, get_stack_info, parse_stack, resolve};
 use utils::{
     fqdn_to_upe, get_config_dir, receive_data, send_data, sql_cols, status, trace_subscription,
 };

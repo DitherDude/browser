@@ -1,13 +1,13 @@
 [package]
 name = "frontend"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
 async-std.workspace = true
+backend.workspace = true
 gtk.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-url_resolver = { path = "../url_resolver" }
 utils.workspace = true
