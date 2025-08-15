@@ -5,6 +5,11 @@ const MOD_MATCH: &str = r"(?<!\\)(?:\\\\)*(X.+?)(?<!\\)X";
 const HEAD_MATCH: &str = r"^(?<!\\)X.*";
 
 #[unsafe(no_mangle)]
+pub fn stacks() -> String {
+    "MRKDN".to_owned()
+}
+
+#[unsafe(no_mangle)]
 pub fn get_elements(markup: String) -> gtk::Box {
     let _ = gtk::init();
     let webview = gtk::Box::builder()
@@ -108,9 +113,4 @@ fn process_attribute(markup: &str, attr: &str, len: usize, head: &str, tail: &st
         }
     }
     markup
-}
-
-#[unsafe(no_mangle)]
-pub fn stacks() -> String {
-    "MRKDN".to_owned()
 }

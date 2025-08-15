@@ -1,11 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
+    "backend",
     "dns_cacher",
     "dns_provider",
     "frontend",
     "server",
-    "backend",
+    "stacks/htmxparser",
     "stacks/mdparser",
     "utils",
 ]
