@@ -169,6 +169,7 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
     let stacks_point = stacks.clone();
     entry.connect_activate(move |entry| {
         if let Some(searchbar) = sb_weak.upgrade() {
+            searchbar.set_css_classes(&["yellowsearch"]);
             let pagecontent;
             if let Some(scrolledwindow) = sw_weak.upgrade() {
                 pagecontent = unsafe { scrolledwindow.steal_data("page-content") };
@@ -188,28 +189,12 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
                                     searchbar.set_css_classes(&["yellowsearch"]);
                                     let buffer =
                                         try_get_webpage(&entry, caching, &stacks_clone).await;
-                                    match &buffer {
-                                        PageContent::Page(pagedata) => {
-                                            scrolledwindow.set_child(Some(&pagedata.0));
-                                            searchbar.set_search_mode(false);
-                                        }
-                                        PageContent::Status(err) => {
-                                            scrolledwindow.set_child(Some(&no_webpage(*err)));
-                                            searchbar.set_search_mode(false);
-                                        }
-                                        PageContent::Failure(e) => {
-                                            error!("FS error: {}", e);
-                                            scrolledwindow
-                                                .set_child(Some(&no_webpage(status::SHAT_THE_BED)));
-                                            searchbar.set_search_mode(false);
-                                        }
-                                        _ => searchbar.set_css_classes(&["yellowsearch"]),
-                                    }
-                                    if pagecontent == PageContent::Paused {
-                                        unsafe {
-                                            scrolledwindow.set_data("page-content", buffer);
-                                        }
-                                    }
+                                    present_cached_webpage(
+                                        buffer,
+                                        &searchbar,
+                                        &scrolledwindow,
+                                        &Some(pagecontent),
+                                    );
                                 }
                             }
                             PageContent::Page(pagedata) => {
@@ -230,88 +215,52 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
                     } else if let Some(entry) = entry_weak.upgrade() {
                         searchbar.set_css_classes(&["yellowsearch"]);
                         let buffer = try_get_webpage(&entry, caching, &stacks_clone).await;
-                        match &buffer {
-                            PageContent::Page(pagedata) => {
-                                scrolledwindow.set_child(Some(&pagedata.0));
-                                searchbar.set_search_mode(false);
-                            }
-                            PageContent::Status(err) => {
-                                scrolledwindow.set_child(Some(&no_webpage(*err)));
-                                searchbar.set_search_mode(false);
-                            }
-                            PageContent::Failure(e) => {
-                                error!("FS error: {}", e);
-                                scrolledwindow.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
-                                searchbar.set_search_mode(false);
-                            }
-                            _ => searchbar.set_css_classes(&["yellowsearch"]),
-                        }
-                        if pagecontent == Some(PageContent::Paused) {
-                            unsafe {
-                                scrolledwindow.set_data("page-content", buffer);
-                            }
-                        }
+                        present_cached_webpage(buffer, &searchbar, &scrolledwindow, &pagecontent);
                     }
                 });
             }
         }
     });
-    let sb_weak = search_bar.downgrade();
     let sw_weak = scrolled_window.downgrade();
+    let sb_weak = search_bar.downgrade();
     entry.connect_changed(move |entry| {
-        if data_saver {
-            if let Some(searchbar) = sb_weak.upgrade() {
-                if let Some(scrolledwindow) = sw_weak.upgrade() {
-                    if searchbar.is_search_mode() {
-                        let text = entry.text();
-                        unsafe {
-                            scrolledwindow.set_data("text", text);
+        let sw_weak = sw_weak.clone();
+        let sb_weak = sb_weak.clone();
+        let entry_weak = entry.downgrade();
+        let stacks_clone = stacks.clone();
+        glib::MainContext::default().spawn_local(async move {
+            if let Some(entry) = entry_weak.upgrade() {
+                if let Some(searchbar) = sb_weak.upgrade() {
+                    searchbar.set_css_classes(&[""]);
+                    if data_saver {
+                        if let Some(scrolledwindow) = sw_weak.upgrade() {
+                            if searchbar.is_search_mode() {
+                                let text = entry.text();
+                                unsafe {
+                                    scrolledwindow.set_data("text", text);
+                                }
+                            }
                         }
+                        return;
                     }
-                }
-            }
-            return;
-        }
-        if let Some(searchbar) = sb_weak.upgrade() {
-            if let Some(scrolledwindow) = sw_weak.upgrade() {
-                let entry_weak = entry.downgrade();
-                let stacks_clone = stacks.clone();
-                glib::MainContext::default().spawn_local(async move {
-                    if let Some(entry) = entry_weak.upgrade() {
+                    if let Some(scrolledwindow) = sw_weak.upgrade() {
                         if searchbar.is_search_mode() {
                             let text = entry.text();
                             unsafe {
                                 scrolledwindow.set_data("text", text);
                             }
                         }
-                        searchbar.set_css_classes(&[""]);
                         let content: Option<PageContent> =
                             unsafe { scrolledwindow.steal_data("page-content") };
                         if content == Some(PageContent::Paused) {
                             return;
                         }
                         let buffer = try_get_webpage(&entry, caching, &stacks_clone).await;
-                        match &buffer {
-                            PageContent::Page(pagedata) => match pagedata.1 {
-                                status::SUCCESS => {
-                                    searchbar.set_css_classes(&["greensearch"]);
-                                }
-                                _ => {
-                                    searchbar.set_css_classes(&["redsearch"]);
-                                }
-                            },
-                            PageContent::Nothing => {}
-                            _ => {
-                                searchbar.set_css_classes(&["redsearch"]);
-                            }
-                        }
-                        unsafe {
-                            scrolledwindow.set_data("page-content", buffer);
-                        }
+                        pre_load_webpage(buffer, &searchbar, &scrolledwindow);
                     }
-                });
+                }
             }
-        }
+        });
     });
     let sw_weak = scrolled_window.downgrade();
     let sb_weak = search_bar.downgrade();
@@ -345,6 +294,59 @@ fn load_css() {
     .yellowsearch text {color: #e38900;}"#,
     ));
     gtk::style_context_add_provider_for_display(&display, &provider, priority);
+}
+
+fn pre_load_webpage(
+    buffer: PageContent,
+    searchbar: &gtk::SearchBar,
+    scrolledwindow: &gtk::ScrolledWindow,
+) {
+    match &buffer {
+        PageContent::Page(pagedata) => match pagedata.1 {
+            status::SUCCESS => {
+                searchbar.set_css_classes(&["greensearch"]);
+            }
+            _ => {
+                searchbar.set_css_classes(&["redsearch"]);
+            }
+        },
+        PageContent::Nothing => {}
+        _ => {
+            searchbar.set_css_classes(&["redsearch"]);
+        }
+    }
+    unsafe {
+        scrolledwindow.set_data("page-content", buffer);
+    }
+}
+
+fn present_cached_webpage(
+    buffer: PageContent,
+    searchbar: &gtk::SearchBar,
+    scrolledwindow: &gtk::ScrolledWindow,
+    pagecontent: &Option<PageContent>,
+) {
+    match &buffer {
+        PageContent::Page(pagedata) => {
+            scrolledwindow.set_child(Some(&pagedata.0));
+            searchbar.set_search_mode(false);
+        }
+        PageContent::Status(err) => {
+            scrolledwindow.set_child(Some(&no_webpage(*err)));
+            searchbar.set_search_mode(false);
+        }
+        PageContent::Failure(e) => {
+            error!("FS error: {}", e);
+            scrolledwindow.set_child(Some(&no_webpage(status::SHAT_THE_BED)));
+            searchbar.set_search_mode(false);
+        }
+        _ => searchbar.set_css_classes(&["yellowsearch"]),
+    }
+    if *pagecontent == Some(PageContent::Paused) {
+        unsafe {
+            scrolledwindow.set_data("page-content", buffer);
+        }
+    }
 }
 
 async fn try_get_webpage(entry: &gtk::SearchEntry, caching: bool, stacks: &str) -> PageContent {
