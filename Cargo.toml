@@ -15,10 +15,11 @@ members = [
 async-std = { version = "1.13.1", features = ["attributes"] }
 backend = { path = "backend" }
 directories = "6.0.0"
+fancy-regex = "0.16.1"
 futures = "0.3.31"
 gtk = { version = "0.10.0", package = "gtk4", features = ["v4_18"] }
 libloading = "0.8.8"
-fancy-regex = "0.16.1"
+roxmltree = "0.20.0"
 sqlx = { version = "0.8.6", features = [
     "mysql",
     "runtime-async-std",

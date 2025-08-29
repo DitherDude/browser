@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 gtk.workspace = true
-fancy-regex.workspace = true
+roxmltree.workspace = true
 
 [lib]
 crate-type = ["dylib"]
