@@ -28,6 +28,11 @@ pub fn get_elements(markup: String) -> gtk::Box {
         }
     };
     for element in tree.root_element().children() {
+        if element.node_type() == NodeType::Text
+            && element.text().is_some_and(|x| x.trim().is_empty())
+        {
+            continue;
+        }
         if let Some(element) = process_element(&element) {
             webview.append(&element);
         } else {
@@ -35,25 +40,6 @@ pub fn get_elements(markup: String) -> gtk::Box {
         }
     }
     webview
-}
-
-fn process_element(element: &Node) -> Option<Widget> {
-    let kind = derive_kind(element.tag_name().name());
-    match kind {
-        ElemKind::Label(text) => process_label(&text, element.children(), element.attributes()),
-        ElemKind::Fallback => element
-            .text()
-            .map(|x| x.trim())
-            .filter(|x| !x.is_empty())
-            .map(|text| {
-                gtk::Label::builder()
-                    .halign(gtk::Align::Start)
-                    .valign(gtk::Align::Start)
-                    .label(text.trim())
-                    .build()
-                    .into()
-            }),
-    }
 }
 
 fn derive_kind(name: &str) -> ElemKind {
@@ -72,10 +58,34 @@ fn derive_kind(name: &str) -> ElemKind {
         "sup" => ElemKind::Label(Text::Style(TestStyle::Superscript)),
         "sub" => ElemKind::Label(Text::Style(TestStyle::Subscript)),
         "code" => ElemKind::Label(Text::Style(TestStyle::Code)),
+        "grid" => ElemKind::Grid(GridKind::Grid),
+        "griditem" | "gi" => ElemKind::Grid(GridKind::GridItem),
         _ => ElemKind::Fallback,
     }
 }
 
+fn process_element(element: &Node) -> Option<Widget> {
+    let kind = derive_kind(element.tag_name().name());
+    match kind {
+        ElemKind::Label(text) => process_label(&text, element.children(), element.attributes()),
+        ElemKind::Grid(GridKind::Grid) => process_grid(element.children(), element.attributes()),
+        ElemKind::Grid(GridKind::GridItem) => None,
+        ElemKind::Fallback => element
+            .text()
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|text| {
+                gtk::Label::builder()
+                    .halign(gtk::Align::Start)
+                    .valign(gtk::Align::Start)
+                    .label(text.trim())
+                    .build()
+                    .into()
+            }),
+    }
+}
+
+/* #region Label */
 fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<Widget> {
     let label = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -373,19 +383,13 @@ fn escape(line: &str) -> String {
         .replace("\"", "&quot;")
 }
 
-#[derive(Debug)]
-enum ElemKind {
-    Label(Text),
-    Fallback,
-}
-
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum Text {
     Kind(TextKind),
     Style(TestStyle),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum TextKind {
     Header1,
     Header2,
@@ -396,7 +400,7 @@ enum TextKind {
     Normal,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum TestStyle {
     Bold,
     Italic,
@@ -405,4 +409,83 @@ enum TestStyle {
     Superscript,
     Subscript,
     Code,
+}
+/* #endregion Label */
+/* #region Grid */
+fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
+    let mut colhom = true;
+    let mut rowhom = false;
+    for attr in attributes {
+        match attr.name() {
+            "column_homogeneous" | "col" => match attr.value() {
+                "n" | "f" | "no" | "false" => colhom = false,
+                _ => colhom = true,
+            },
+            "row_homogeneous" | "row" => match attr.value() {
+                "n" | "f" | "no" | "false" => rowhom = false,
+                _ => rowhom = true,
+            },
+            _ => {}
+        }
+    }
+    let grid = gtk::Grid::builder()
+        .column_homogeneous(colhom)
+        .row_homogeneous(rowhom)
+        .build();
+    for child in children {
+        if derive_kind(child.tag_name().name()) != ElemKind::Grid(GridKind::GridItem) {
+            println!("Expected GridItem, found: {child:?}");
+            continue;
+        }
+        let (mut column, mut row, mut width, mut height) = (0i32, 0i32, 0i32, 0i32);
+        for attr in child.attributes() {
+            let val = attr.value();
+            match attr.name() {
+                "c" | "column" => {
+                    if let Ok(val) = val.parse::<i32>() {
+                        column = val;
+                    }
+                }
+                "r" | "row" => {
+                    if let Ok(val) = val.parse::<i32>() {
+                        row = val;
+                    }
+                }
+                "w" | "width" => {
+                    if let Ok(val) = val.parse::<i32>() {
+                        width = val;
+                    }
+                }
+                "h" | "height" => {
+                    if let Ok(val) = val.parse::<i32>() {
+                        height = val;
+                    }
+                }
+                _ => {}
+            };
+        }
+        for baby in child.children() {
+            if baby.is_text() && baby.text().is_some_and(|x| x.trim().is_empty()) {
+                continue;
+            } else if let Some(widget) = process_element(&baby) {
+                grid.attach(&widget, column, row, width, height);
+                break;
+            }
+        }
+    }
+    Some(grid.into())
+}
+
+#[derive(Debug, PartialEq)]
+enum GridKind {
+    Grid,
+    GridItem,
+}
+/* #endregion Grid */
+
+#[derive(Debug, PartialEq)]
+enum ElemKind {
+    Label(Text),
+    Grid(GridKind),
+    Fallback,
 }
