@@ -50,7 +50,7 @@ fn derive_kind(name: &str) -> ElemKind {
         "h4" => ElemKind::Label(Text::Kind(TextKind::Header4)),
         "h5" => ElemKind::Label(Text::Kind(TextKind::Header5)),
         "h6" => ElemKind::Label(Text::Kind(TextKind::Header6)),
-        "p" => ElemKind::Label(Text::Kind(TextKind::Normal)),
+        "p" | "_" => ElemKind::Label(Text::Kind(TextKind::Normal)),
         "i" => ElemKind::Label(Text::Style(TestStyle::Italic)),
         "b" => ElemKind::Label(Text::Style(TestStyle::Bold)),
         "u" => ElemKind::Label(Text::Style(TestStyle::Underline)),
@@ -92,15 +92,11 @@ fn process_element(element: &Node) -> Option<Widget> {
 /* #region Label */
 fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<Widget> {
     let (text, defaults) = process_text(kind, children, attributes)?;
-    let label = gtk::Label::builder()
-        .halign(defaults.halign)
-        .valign(defaults.valign)
-        .hexpand(defaults.hexpand)
-        .vexpand(defaults.vexpand)
-        .use_markup(true)
-        .build();
+    let label = gtk::Label::builder().use_markup(true).build();
     label.set_label(&text);
-    Some(label.into())
+    let label = label.into();
+    defaults.apply(&label);
+    Some(label)
 }
 
 fn process_text(
@@ -130,9 +126,22 @@ fn text_kind(
     for child in children {
         match child.node_type() {
             NodeType::Element => {
-                if let ElemKind::Label(Text::Style(style)) = derive_kind(child.tag_name().name()) {
-                    if let Some(data) = text_style(&style, child.children()) {
-                        markup.push_str(&data);
+                if let ElemKind::Label(text) = derive_kind(child.tag_name().name()) {
+                    match text {
+                        Text::Kind(kind) => {
+                            if let Some((data, _)) = process_text(
+                                &Text::Kind(kind),
+                                child.children(),
+                                child.attributes(),
+                            ) {
+                                markup.push_str(&data);
+                            }
+                        }
+                        Text::Style(style) => {
+                            if let Some(data) = text_style(&style, child.children()) {
+                                markup.push_str(&data);
+                            }
+                        }
                     }
                 }
             }
@@ -358,7 +367,7 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
                 "s" | "sentence" => markup.push_str("segment='sentence' "),
                 _ => {}
             },
-            _ => defaults.apply(attr),
+            _ => defaults.modify(attr),
         };
     }
     (markup, defaults)
@@ -446,16 +455,12 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
                 "n" | "f" | "no" | "false" => rowhom = false,
                 _ => rowhom = true,
             },
-            _ => defaults.apply(attr),
+            _ => defaults.modify(attr),
         }
     }
     let grid = gtk::Grid::builder()
         .column_homogeneous(colhom)
         .row_homogeneous(rowhom)
-        .halign(defaults.halign)
-        .valign(defaults.valign)
-        .hexpand(defaults.hexpand)
-        .vexpand(defaults.vexpand)
         .build();
     for child in children {
         if derive_kind(child.tag_name().name()) != ElemKind::Grid(GridKind::GridItem) {
@@ -498,7 +503,9 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
             }
         }
     }
-    Some(grid.into())
+    let grid = grid.into();
+    defaults.apply(&grid);
+    Some(grid)
 }
 
 #[derive(Debug, PartialEq)]
@@ -511,41 +518,35 @@ enum GridKind {
 fn process_container(children: Children, attributes: Attributes) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
     for attr in attributes {
-        defaults.apply(attr);
+        defaults.modify(attr);
     }
-    let container = gtk::Box::builder()
-        .halign(defaults.halign)
-        .valign(defaults.valign)
-        .hexpand(defaults.hexpand)
-        .vexpand(defaults.vexpand)
-        .build();
+    let container = gtk::Box::builder().build();
     for child in children {
         if let Some(widget) = process_element(&child) {
             container.append(&widget);
         }
     }
-    Some(container.into())
+    let container = container.into();
+    defaults.apply(&container);
+    Some(container)
 }
 /* #endregion Container */
 /* #region Button */
 fn process_button(children: Children, attributes: Attributes) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
     for attr in attributes {
-        defaults.apply(attr);
+        defaults.modify(attr);
     }
-    let button = gtk::Button::builder()
-        .halign(defaults.halign)
-        .valign(defaults.valign)
-        .hexpand(defaults.hexpand)
-        .vexpand(defaults.vexpand)
-        .build();
+    let button = gtk::Button::builder().build();
     for child in children {
         if let Some(widget) = process_element(&child) {
             button.set_child(Some(&widget));
             break;
         }
     }
-    Some(button.into())
+    let button = button.into();
+    defaults.apply(&button);
+    Some(button)
 }
 /* #endregion Button */
 
@@ -565,7 +566,7 @@ impl WidgetDefaults {
             vexpand: false,
         }
     }
-    fn apply(&mut self, attr: roxmltree::Attribute) {
+    fn modify(&mut self, attr: roxmltree::Attribute) {
         let val = attr.value();
         match attr.name() {
             "HALIGN" => match val {
@@ -594,6 +595,12 @@ impl WidgetDefaults {
             },
             _ => {}
         }
+    }
+    fn apply(&self, widget: &Widget) {
+        widget.set_hexpand(self.hexpand);
+        widget.set_vexpand(self.vexpand);
+        widget.set_halign(self.halign);
+        widget.set_valign(self.valign);
     }
 }
 
