@@ -61,6 +61,7 @@ fn derive_kind(name: &str) -> ElemKind {
         "grid" => ElemKind::Grid(GridKind::Grid),
         "griditem" | "gi" => ElemKind::Grid(GridKind::GridItem),
         "div" | "box" => ElemKind::Container,
+        "button" => ElemKind::Button,
         _ => ElemKind::Fallback,
     }
 }
@@ -72,6 +73,7 @@ fn process_element(element: &Node) -> Option<Widget> {
         ElemKind::Grid(GridKind::Grid) => process_grid(element.children(), element.attributes()),
         ElemKind::Grid(GridKind::GridItem) => None,
         ElemKind::Container => process_container(element.children(), element.attributes()),
+        ElemKind::Button => process_button(element.children(), element.attributes()),
         ElemKind::Fallback => element
             .text()
             .map(|x| x.trim())
@@ -525,6 +527,27 @@ fn process_container(children: Children, attributes: Attributes) -> Option<Widge
     Some(container.into())
 }
 /* #endregion Container */
+/* #region Button */
+fn process_button(children: Children, attributes: Attributes) -> Option<Widget> {
+    let mut defaults = WidgetDefaults::new();
+    for attr in attributes {
+        defaults.apply(attr);
+    }
+    let button = gtk::Button::builder()
+        .halign(defaults.halign)
+        .valign(defaults.valign)
+        .hexpand(defaults.hexpand)
+        .vexpand(defaults.vexpand)
+        .build();
+    for child in children {
+        if let Some(widget) = process_element(&child) {
+            button.set_child(Some(&widget));
+            break;
+        }
+    }
+    Some(button.into())
+}
+/* #endregion Button */
 
 struct WidgetDefaults {
     halign: gtk::Align,
@@ -579,5 +602,6 @@ enum ElemKind {
     Label(Text),
     Grid(GridKind),
     Container,
+    Button,
     Fallback,
 }
