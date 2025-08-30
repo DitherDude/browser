@@ -60,6 +60,7 @@ fn derive_kind(name: &str) -> ElemKind {
         "code" => ElemKind::Label(Text::Style(TestStyle::Code)),
         "grid" => ElemKind::Grid(GridKind::Grid),
         "griditem" | "gi" => ElemKind::Grid(GridKind::GridItem),
+        "div" | "box" => ElemKind::Container,
         _ => ElemKind::Fallback,
     }
 }
@@ -67,9 +68,10 @@ fn derive_kind(name: &str) -> ElemKind {
 fn process_element(element: &Node) -> Option<Widget> {
     let kind = derive_kind(element.tag_name().name());
     match kind {
-        ElemKind::Label(text) => process_label(&text, element.children(), element.attributes()),
+        ElemKind::Label(kind) => process_label(&kind, element.children(), element.attributes()),
         ElemKind::Grid(GridKind::Grid) => process_grid(element.children(), element.attributes()),
         ElemKind::Grid(GridKind::GridItem) => None,
+        ElemKind::Container => process_container(element.children(), element.attributes()),
         ElemKind::Fallback => element
             .text()
             .map(|x| x.trim())
@@ -87,26 +89,41 @@ fn process_element(element: &Node) -> Option<Widget> {
 
 /* #region Label */
 fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<Widget> {
+    let (text, defaults) = process_text(kind, children, attributes)?;
     let label = gtk::Label::builder()
-        .halign(gtk::Align::Start)
-        .valign(gtk::Align::Start)
+        .halign(defaults.halign)
+        .valign(defaults.valign)
+        .hexpand(defaults.hexpand)
+        .vexpand(defaults.vexpand)
         .use_markup(true)
         .build();
-    let text = process_text(kind, children, attributes)?;
     label.set_label(&text);
     Some(label.into())
 }
 
-fn process_text(kind: &Text, children: Children, attributes: Attributes) -> Option<String> {
+fn process_text(
+    kind: &Text,
+    children: Children,
+    attributes: Attributes,
+) -> Option<(String, WidgetDefaults)> {
     let mut markup = String::new();
+    let mut defaults = WidgetDefaults::new();
     match kind {
-        Text::Kind(header) => markup.push_str(&text_kind(header, children, attributes)?),
+        Text::Kind(header) => {
+            let (kind, default) = text_kind(header, children, attributes)?;
+            defaults = default;
+            markup.push_str(&kind);
+        }
         Text::Style(style) => markup.push_str(&text_style(style, children)?),
     }
-    Some(markup)
+    Some((markup, defaults))
 }
 
-fn text_kind(kind: &TextKind, children: Children, attributes: Attributes) -> Option<String> {
+fn text_kind(
+    kind: &TextKind,
+    children: Children,
+    attributes: Attributes,
+) -> Option<(String, WidgetDefaults)> {
     let mut markup = String::new();
     for child in children {
         match child.node_type() {
@@ -125,7 +142,7 @@ fn text_kind(kind: &TextKind, children: Children, attributes: Attributes) -> Opt
             _ => {}
         }
     }
-    let attributes = text_attributes(attributes);
+    let (attributes, defaults) = text_attributes(attributes);
     match kind {
         TextKind::Header1 => markup = format!("<span size='xx-large' {attributes}>{markup}</span>"),
         TextKind::Header2 => markup = format!("<span size='x-large' {attributes}>{markup}</span>"),
@@ -135,11 +152,12 @@ fn text_kind(kind: &TextKind, children: Children, attributes: Attributes) -> Opt
         TextKind::Header6 => markup = format!("<span size='x-small' {attributes}>{markup}</span>"),
         TextKind::Normal => markup = format!("<span {attributes}>{markup}</span>"),
     }
-    Some(markup)
+    Some((markup, defaults))
 }
 
-fn text_attributes(attributes: Attributes) -> String {
+fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
     let mut markup = String::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -338,10 +356,10 @@ fn text_attributes(attributes: Attributes) -> String {
                 "s" | "sentence" => markup.push_str("segment='sentence' "),
                 _ => {}
             },
-            _ => {}
+            _ => defaults.apply(attr),
         };
     }
-    markup
+    (markup, defaults)
 }
 
 fn text_style(kind: &TestStyle, children: Children) -> Option<String> {
@@ -415,6 +433,7 @@ enum TestStyle {
 fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
     let mut colhom = true;
     let mut rowhom = false;
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "column_homogeneous" | "col" => match attr.value() {
@@ -425,12 +444,16 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
                 "n" | "f" | "no" | "false" => rowhom = false,
                 _ => rowhom = true,
             },
-            _ => {}
+            _ => defaults.apply(attr),
         }
     }
     let grid = gtk::Grid::builder()
         .column_homogeneous(colhom)
         .row_homogeneous(rowhom)
+        .halign(defaults.halign)
+        .valign(defaults.valign)
+        .hexpand(defaults.hexpand)
+        .vexpand(defaults.vexpand)
         .build();
     for child in children {
         if derive_kind(child.tag_name().name()) != ElemKind::Grid(GridKind::GridItem) {
@@ -482,10 +505,64 @@ enum GridKind {
     GridItem,
 }
 /* #endregion Grid */
+/* #region Container */
+fn process_container(children: Children, attributes: Attributes) -> Option<Widget> {
+    None
+}
+/* #endregion Container */
+
+struct WidgetDefaults {
+    halign: gtk::Align,
+    valign: gtk::Align,
+    hexpand: bool,
+    vexpand: bool,
+}
+
+impl WidgetDefaults {
+    pub fn new() -> Self {
+        Self {
+            halign: gtk::Align::Start,
+            valign: gtk::Align::Start,
+            hexpand: false,
+            vexpand: false,
+        }
+    }
+    fn apply(&mut self, attr: roxmltree::Attribute) {
+        let val = attr.value();
+        match attr.name() {
+            "HALIGN" => match val {
+                "fill" => self.halign = gtk::Align::Fill,
+                "start" | "left" => self.halign = gtk::Align::Start,
+                "end" | "right" => self.halign = gtk::Align::End,
+                "center" | "middle" => self.halign = gtk::Align::Center,
+                "baseline" => self.halign = gtk::Align::Baseline,
+                _ => {}
+            },
+            "VALIGN" => match val {
+                "fill" => self.valign = gtk::Align::Fill,
+                "start" | "left" => self.valign = gtk::Align::Start,
+                "end" | "right" => self.valign = gtk::Align::End,
+                "center" | "middle" => self.valign = gtk::Align::Center,
+                "baseline" => self.valign = gtk::Align::Baseline,
+                _ => {}
+            },
+            "HEXPAND" => match val {
+                "true" | "t" | "yes" | "y" => self.hexpand = true,
+                _ => self.hexpand = false,
+            },
+            "VEXPAND" => match val {
+                "true" | "t" | "yes" | "y" => self.vexpand = true,
+                _ => self.vexpand = false,
+            },
+            _ => {}
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 enum ElemKind {
     Label(Text),
     Grid(GridKind),
+    Container,
     Fallback,
 }
