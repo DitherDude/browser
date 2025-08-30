@@ -507,7 +507,22 @@ enum GridKind {
 /* #endregion Grid */
 /* #region Container */
 fn process_container(children: Children, attributes: Attributes) -> Option<Widget> {
-    None
+    let mut defaults = WidgetDefaults::new();
+    for attr in attributes {
+        defaults.apply(attr);
+    }
+    let container = gtk::Box::builder()
+        .halign(defaults.halign)
+        .valign(defaults.valign)
+        .hexpand(defaults.hexpand)
+        .vexpand(defaults.vexpand)
+        .build();
+    for child in children {
+        if let Some(widget) = process_element(&child) {
+            container.append(&widget);
+        }
+    }
+    Some(container.into())
 }
 /* #endregion Container */
 
