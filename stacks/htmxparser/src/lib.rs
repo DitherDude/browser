@@ -66,6 +66,8 @@ fn derive_kind(name: &str) -> ElemKind {
         "checked" | "check" | "cbutton" | "radio" | "rbutton" => {
             ElemKind::Button(ButtonKind::Checked)
         }
+        "canvas" | "draw" | "drawingarea" => ElemKind::Canvas(CanvasKind::DrawingArea),
+        "gl" | "glarea" => ElemKind::Canvas(CanvasKind::GLArea),
         _ => ElemKind::Fallback,
     }
 }
@@ -86,6 +88,7 @@ fn process_element(element: &Node, parent: &gtk4::Box) -> Option<Widget> {
             ButtonKind::Toggle => toggle_button(element.children(), element.attributes(), parent),
             ButtonKind::Checked => checked_button(element.children(), element.attributes(), parent),
         },
+        ElemKind::Canvas(kind) => canvas_area(element.attributes(), kind),
         ElemKind::Fallback => element
             .text()
             .map(|x| x.trim())
@@ -101,7 +104,7 @@ fn process_element(element: &Node, parent: &gtk4::Box) -> Option<Widget> {
     }
 }
 
-/* #region Label */
+/* #region Labels */
 fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<Widget> {
     let (text, defaults) = process_text(kind, children, attributes)?;
     let label = gtk4::Label::builder().use_markup(true).build();
@@ -451,7 +454,7 @@ enum TestStyle {
     Subscript,
     Code,
 }
-/* #endregion Label */
+/* #endregion Labels */
 /* #region Containers */
 fn process_box(children: Children, attributes: Attributes) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
@@ -625,7 +628,8 @@ fn checked_button(
     }
     for child in children {
         if let Some(widget) = process_element(&child, parent) {
-            // POV when gtk4-rs forgot to implement ButtonExt for CheckButton
+            // POV when gtk4-rs forgot to implement ButtonExt for CheckButton, so you
+            // have to implement `CheckButton::set_child(Option<&impl IsA<Widget>)` yourself:
             button.set_property("child", Some(&widget));
             break;
         }
@@ -641,7 +645,27 @@ enum ButtonKind {
     Toggle,
     Checked,
 }
-/* #endregion Button */
+/* #endregion Buttons */
+/* #region Canvases */
+fn canvas_area(attributes: Attributes, kind: CanvasKind) -> Option<Widget> {
+    let mut defaults = WidgetDefaults::new();
+    let canvas: Widget = match kind {
+        CanvasKind::GLArea => gtk4::GLArea::builder().build().into(),
+        CanvasKind::DrawingArea => gtk4::DrawingArea::builder().build().into(),
+    };
+    for attr in attributes {
+        defaults.modify(attr);
+    }
+    defaults.apply(&canvas);
+    Some(canvas)
+}
+
+#[derive(Debug, PartialEq)]
+enum CanvasKind {
+    GLArea,
+    DrawingArea,
+}
+/* #endregion Canvases */
 
 #[derive(Debug)]
 struct Margin {
@@ -761,5 +785,6 @@ enum ElemKind {
     Label(Text),
     Container(BoxKind),
     Button(ButtonKind),
+    Canvas(CanvasKind),
     Fallback,
 }
