@@ -33,7 +33,7 @@ pub fn get_elements(markup: String) -> gtk::Box {
         {
             continue;
         }
-        if let Some(element) = process_element(&element) {
+        if let Some(element) = process_element(&element, &webview) {
             webview.append(&element);
         } else {
             println!("Unrecognised element: {element:#?}");
@@ -58,22 +58,32 @@ fn derive_kind(name: &str) -> ElemKind {
         "sup" => ElemKind::Label(Text::Style(TestStyle::Superscript)),
         "sub" => ElemKind::Label(Text::Style(TestStyle::Subscript)),
         "code" => ElemKind::Label(Text::Style(TestStyle::Code)),
-        "grid" => ElemKind::Grid(GridKind::Grid),
-        "griditem" | "gi" => ElemKind::Grid(GridKind::GridItem),
-        "div" | "box" => ElemKind::Container,
-        "button" => ElemKind::Button,
+        "grid" => ElemKind::Container(BoxKind::Grid),
+        "griditem" | "gi" => ElemKind::Container(BoxKind::GridItem),
+        "div" | "box" => ElemKind::Container(BoxKind::Normal),
+        "button" => ElemKind::Button(ButtonKind::Normal),
+        "toggle" | "tbutton" => ElemKind::Button(ButtonKind::Toggle),
+        "checked" | "cbutton" | "radio" | "rbutton" => ElemKind::Button(ButtonKind::Checked),
         _ => ElemKind::Fallback,
     }
 }
 
-fn process_element(element: &Node) -> Option<Widget> {
+fn process_element(element: &Node, parent: &gtk::Box) -> Option<Widget> {
     let kind = derive_kind(element.tag_name().name());
     match kind {
         ElemKind::Label(kind) => process_label(&kind, element.children(), element.attributes()),
-        ElemKind::Grid(GridKind::Grid) => process_grid(element.children(), element.attributes()),
-        ElemKind::Grid(GridKind::GridItem) => None,
-        ElemKind::Container => process_container(element.children(), element.attributes()),
-        ElemKind::Button => process_button(element.children(), element.attributes()),
+        ElemKind::Container(BoxKind::Grid) => {
+            process_grid(element.children(), element.attributes(), parent)
+        }
+        ElemKind::Container(BoxKind::GridItem) => None,
+        ElemKind::Container(BoxKind::Normal) => {
+            process_box(element.children(), element.attributes())
+        }
+        ElemKind::Button(kind) => match kind {
+            ButtonKind::Normal => normal_button(element.children(), element.attributes(), parent),
+            ButtonKind::Toggle => toggle_button(element.children(), element.attributes(), parent),
+            ButtonKind::Checked => checked_button(element.children(), element.attributes(), parent),
+        },
         ElemKind::Fallback => element
             .text()
             .map(|x| x.trim())
@@ -440,8 +450,24 @@ enum TestStyle {
     Code,
 }
 /* #endregion Label */
-/* #region Grid */
-fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
+/* #region Containers */
+fn process_box(children: Children, attributes: Attributes) -> Option<Widget> {
+    let mut defaults = WidgetDefaults::new();
+    let container = gtk::Box::builder().build();
+    for attr in attributes {
+        defaults.modify(attr);
+    }
+    for child in children {
+        if let Some(widget) = process_element(&child, &container) {
+            container.append(&widget);
+        }
+    }
+    let container = container.into();
+    defaults.apply(&container);
+    Some(container)
+}
+
+fn process_grid(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
     let mut colhom = true;
     let mut rowhom = false;
     let mut defaults = WidgetDefaults::new();
@@ -463,7 +489,7 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
         .row_homogeneous(rowhom)
         .build();
     for child in children {
-        if derive_kind(child.tag_name().name()) != ElemKind::Grid(GridKind::GridItem) {
+        if derive_kind(child.tag_name().name()) != ElemKind::Container(BoxKind::GridItem) {
             println!("Expected GridItem, found: {child:?}");
             continue;
         }
@@ -497,7 +523,7 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
         for baby in child.children() {
             if baby.is_text() && baby.text().is_some_and(|x| x.trim().is_empty()) {
                 continue;
-            } else if let Some(widget) = process_element(&baby) {
+            } else if let Some(widget) = process_element(&baby, parent) {
                 grid.attach(&widget, column, row, width, height);
                 break;
             }
@@ -509,37 +535,22 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<Widget> {
 }
 
 #[derive(Debug, PartialEq)]
-enum GridKind {
+enum BoxKind {
     Grid,
     GridItem,
+    Normal,
 }
-/* #endregion Grid */
-/* #region Container */
-fn process_container(children: Children, attributes: Attributes) -> Option<Widget> {
+
+/* #endregion Containers */
+/* #region Buttons */
+fn normal_button(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
-    for attr in attributes {
-        defaults.modify(attr);
-    }
-    let container = gtk::Box::builder().build();
-    for child in children {
-        if let Some(widget) = process_element(&child) {
-            container.append(&widget);
-        }
-    }
-    let container = container.into();
-    defaults.apply(&container);
-    Some(container)
-}
-/* #endregion Container */
-/* #region Button */
-fn process_button(children: Children, attributes: Attributes) -> Option<Widget> {
-    let mut defaults = WidgetDefaults::new();
-    for attr in attributes {
-        defaults.modify(attr);
-    }
     let button = gtk::Button::builder().build();
+    for attr in attributes {
+        defaults.modify(attr);
+    }
     for child in children {
-        if let Some(widget) = process_element(&child) {
+        if let Some(widget) = process_element(&child, parent) {
             button.set_child(Some(&widget));
             break;
         }
@@ -547,6 +558,81 @@ fn process_button(children: Children, attributes: Attributes) -> Option<Widget> 
     let button = button.into();
     defaults.apply(&button);
     Some(button)
+}
+
+fn toggle_button(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
+    let mut defaults = WidgetDefaults::new();
+    let button = gtk::ToggleButton::builder().build();
+    for attr in attributes {
+        match attr.name() {
+            "checked" | "check" => match attr.value() {
+                "no" | "n" | "false" | "f" => button.set_active(false),
+                _ => button.set_active(true),
+            },
+            "group" => {
+                let mut child = parent.first_child();
+                while let Some(cur_child) = child {
+                    if let Some(cur_child) = cur_child.downcast_ref::<gtk::ToggleButton>() {
+                        if cur_child.widget_name() == attr.value() {
+                            button.set_group(Some(cur_child));
+                        }
+                    }
+                    child = cur_child.next_sibling();
+                }
+            }
+            _ => defaults.modify(attr),
+        }
+    }
+    for child in children {
+        if let Some(widget) = process_element(&child, parent) {
+            button.set_child(Some(&widget));
+            break;
+        }
+    }
+    let button = button.into();
+    defaults.apply(&button);
+    Some(button)
+}
+
+fn checked_button(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
+    let mut defaults = WidgetDefaults::new();
+    let button = gtk::CheckButton::builder().build();
+    for attr in attributes {
+        match attr.name() {
+            "checked" | "check" => match attr.value() {
+                "no" | "n" | "false" | "f" => button.set_active(false),
+                _ => button.set_active(true),
+            },
+            "group" => {
+                let mut child = parent.first_child();
+                while let Some(cur_child) = child {
+                    if let Some(cur_child) = cur_child.downcast_ref::<gtk::CheckButton>() {
+                        if cur_child.widget_name() == attr.value() {
+                            button.set_group(Some(cur_child));
+                        }
+                    }
+                    child = cur_child.next_sibling();
+                }
+            }
+            _ => defaults.modify(attr),
+        }
+    }
+    for child in children {
+        if let Some(widget) = process_element(&child, parent) {
+            button.set_child(Some(&widget));
+            break;
+        }
+    }
+    let button = button.into();
+    defaults.apply(&button);
+    Some(button)
+}
+
+#[derive(Debug, PartialEq)]
+enum ButtonKind {
+    Normal,
+    Toggle,
+    Checked,
 }
 /* #endregion Button */
 
@@ -577,6 +663,7 @@ struct WidgetDefaults {
     tooltip: Option<String>,
     opacity: f64,
     margin: Margin,
+    name: String,
 }
 
 impl WidgetDefaults {
@@ -589,6 +676,7 @@ impl WidgetDefaults {
             tooltip: None,
             opacity: 1f64,
             margin: Margin::new(),
+            name: String::new(),
         }
     }
     fn modify(&mut self, attr: roxmltree::Attribute) {
@@ -642,11 +730,11 @@ impl WidgetDefaults {
                     self.margin.end = end;
                 }
             }
+            "_name" => self.name = val.trim().to_string(),
             _ => {}
         }
     }
     fn apply(&self, widget: &Widget) {
-        println!("{self:?}");
         widget.set_hexpand(self.hexpand);
         widget.set_vexpand(self.vexpand);
         widget.set_halign(self.halign);
@@ -657,14 +745,14 @@ impl WidgetDefaults {
         widget.set_margin_bottom(self.margin.bottom);
         widget.set_margin_start(self.margin.start);
         widget.set_margin_end(self.margin.end);
+        widget.set_widget_name(&self.name);
     }
 }
 
 #[derive(Debug, PartialEq)]
 enum ElemKind {
     Label(Text),
-    Grid(GridKind),
-    Container,
-    Button,
+    Container(BoxKind),
+    Button(ButtonKind),
     Fallback,
 }
