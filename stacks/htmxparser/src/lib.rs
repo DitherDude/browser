@@ -550,11 +550,33 @@ fn process_button(children: Children, attributes: Attributes) -> Option<Widget> 
 }
 /* #endregion Button */
 
+#[derive(Debug)]
+struct Margin {
+    top: i32,
+    bottom: i32,
+    start: i32,
+    end: i32,
+}
+
+impl Margin {
+    pub fn new() -> Self {
+        Self {
+            top: 0,
+            bottom: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+}
+#[derive(Debug)]
 struct WidgetDefaults {
     halign: gtk::Align,
     valign: gtk::Align,
     hexpand: bool,
     vexpand: bool,
+    tooltip: Option<String>,
+    opacity: f64,
+    margin: Margin,
 }
 
 impl WidgetDefaults {
@@ -564,12 +586,15 @@ impl WidgetDefaults {
             valign: gtk::Align::Start,
             hexpand: false,
             vexpand: false,
+            tooltip: None,
+            opacity: 1f64,
+            margin: Margin::new(),
         }
     }
     fn modify(&mut self, attr: roxmltree::Attribute) {
         let val = attr.value();
         match attr.name() {
-            "HALIGN" => match val {
+            "_halign" => match val {
                 "fill" => self.halign = gtk::Align::Fill,
                 "start" | "left" => self.halign = gtk::Align::Start,
                 "end" | "right" => self.halign = gtk::Align::End,
@@ -577,7 +602,7 @@ impl WidgetDefaults {
                 "baseline" => self.halign = gtk::Align::Baseline,
                 _ => {}
             },
-            "VALIGN" => match val {
+            "_valign" => match val {
                 "fill" => self.valign = gtk::Align::Fill,
                 "start" | "left" => self.valign = gtk::Align::Start,
                 "end" | "right" => self.valign = gtk::Align::End,
@@ -585,22 +610,53 @@ impl WidgetDefaults {
                 "baseline" => self.valign = gtk::Align::Baseline,
                 _ => {}
             },
-            "HEXPAND" => match val {
+            "_hexpand" => match val {
                 "true" | "t" | "yes" | "y" => self.hexpand = true,
                 _ => self.hexpand = false,
             },
-            "VEXPAND" => match val {
+            "_vexpand" => match val {
                 "true" | "t" | "yes" | "y" => self.vexpand = true,
                 _ => self.vexpand = false,
             },
+            "_tooltip" => {
+                let val = val.trim().to_owned();
+                self.tooltip = if val.is_empty() { None } else { Some(val) }
+            }
+            "_opacity" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    self.opacity = val;
+                }
+            }
+            "_margin" => {
+                let mut val = val.split(",");
+                if let Some(Ok(top)) = val.nth(0).map(|x| x.parse::<i32>()) {
+                    self.margin.top = top;
+                }
+                if let Some(Ok(bottom)) = val.nth(0).map(|x| x.parse::<i32>()) {
+                    self.margin.bottom = bottom;
+                }
+                if let Some(Ok(start)) = val.nth(0).map(|x| x.parse::<i32>()) {
+                    self.margin.start = start;
+                }
+                if let Some(Ok(end)) = val.nth(0).map(|x| x.parse::<i32>()) {
+                    self.margin.end = end;
+                }
+            }
             _ => {}
         }
     }
     fn apply(&self, widget: &Widget) {
+        println!("{self:?}");
         widget.set_hexpand(self.hexpand);
         widget.set_vexpand(self.vexpand);
         widget.set_halign(self.halign);
         widget.set_valign(self.valign);
+        widget.set_tooltip_text(self.tooltip.as_deref());
+        widget.set_opacity(self.opacity);
+        widget.set_margin_top(self.margin.top);
+        widget.set_margin_bottom(self.margin.bottom);
+        widget.set_margin_start(self.margin.start);
+        widget.set_margin_end(self.margin.end);
     }
 }
 
