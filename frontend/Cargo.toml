@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 async-std.workspace = true
 backend.workspace = true
-gtk.workspace = true
+gtk4.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -1,5 +1,5 @@
 use fancy_regex::Regex;
-use gtk::prelude::*;
+use gtk4::prelude::*;
 
 const MOD_MATCH: &str = r"(?<!\\)(?:\\\\)*(X.+?)(?<!\\)X";
 const HEAD_MATCH: &str = r"^(?<!\\)X.*";
@@ -10,10 +10,10 @@ pub fn stacks() -> String {
 }
 
 #[unsafe(no_mangle)]
-pub fn get_elements(markup: String) -> gtk::Box {
-    let _ = gtk::init();
-    let webview = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
+pub fn get_elements(markup: String) -> gtk4::Box {
+    let _ = gtk4::init();
+    let webview = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
         .build();
     for line in markup.lines() {
         let safe_line = escape(line);
@@ -30,10 +30,10 @@ fn escape(line: &str) -> String {
         .replace("\"", "&quot;")
 }
 
-fn process_headers(markup: &str) -> gtk::Widget {
-    let label = gtk::Label::builder()
-        .halign(gtk::Align::Start)
-        .valign(gtk::Align::Start)
+fn process_headers(markup: &str) -> gtk4::Widget {
+    let label = gtk4::Label::builder()
+        .halign(gtk4::Align::Start)
+        .valign(gtk4::Align::Start)
         .use_markup(true)
         .build();
     let mut markup = markup.to_owned();
@@ -81,7 +81,7 @@ fn process_header(markup: &str, attr: &str, head: &str, tail: &str) -> String {
     result
 }
 
-fn done(markup: &str, label: gtk::Label) -> gtk::Label {
+fn done(markup: &str, label: gtk4::Label) -> gtk4::Label {
     let markup = process_attributes(markup);
     label.set_label(&markup.replace("\\\\", "\\"));
     label

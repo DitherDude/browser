@@ -1,4 +1,4 @@
-use gtk::{Widget, prelude::*};
+use gtk4::{Widget, prelude::*};
 use roxmltree::{Attributes, Children, Document, Node, NodeType};
 
 #[unsafe(no_mangle)]
@@ -7,19 +7,19 @@ pub fn stacks() -> String {
 }
 
 #[unsafe(no_mangle)]
-pub fn get_elements(markup: String) -> gtk::Box {
+pub fn get_elements(markup: String) -> gtk4::Box {
     let mut markup = markup;
     if !markup.starts_with("<xml") {
         markup = format!("<xml>{markup}</xml>");
     }
-    let _ = gtk::init();
-    let webview = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
+    let _ = gtk4::init();
+    let webview = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
         .build();
     let tree = match Document::parse(&markup) {
         Ok(tree) => tree,
         Err(e) => {
-            let label = gtk::Label::builder()
+            let label = gtk4::Label::builder()
                 .label(format!("Error parsing HTML! {e}"))
                 .vexpand(true)
                 .build();
@@ -63,12 +63,14 @@ fn derive_kind(name: &str) -> ElemKind {
         "div" | "box" => ElemKind::Container(BoxKind::Normal),
         "button" => ElemKind::Button(ButtonKind::Normal),
         "toggle" | "tbutton" => ElemKind::Button(ButtonKind::Toggle),
-        "checked" | "cbutton" | "radio" | "rbutton" => ElemKind::Button(ButtonKind::Checked),
+        "checked" | "check" | "cbutton" | "radio" | "rbutton" => {
+            ElemKind::Button(ButtonKind::Checked)
+        }
         _ => ElemKind::Fallback,
     }
 }
 
-fn process_element(element: &Node, parent: &gtk::Box) -> Option<Widget> {
+fn process_element(element: &Node, parent: &gtk4::Box) -> Option<Widget> {
     let kind = derive_kind(element.tag_name().name());
     match kind {
         ElemKind::Label(kind) => process_label(&kind, element.children(), element.attributes()),
@@ -89,9 +91,9 @@ fn process_element(element: &Node, parent: &gtk::Box) -> Option<Widget> {
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
             .map(|text| {
-                gtk::Label::builder()
-                    .halign(gtk::Align::Start)
-                    .valign(gtk::Align::Start)
+                gtk4::Label::builder()
+                    .halign(gtk4::Align::Start)
+                    .valign(gtk4::Align::Start)
                     .label(text.trim())
                     .build()
                     .into()
@@ -102,7 +104,7 @@ fn process_element(element: &Node, parent: &gtk::Box) -> Option<Widget> {
 /* #region Label */
 fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<Widget> {
     let (text, defaults) = process_text(kind, children, attributes)?;
-    let label = gtk::Label::builder().use_markup(true).build();
+    let label = gtk4::Label::builder().use_markup(true).build();
     label.set_label(&text);
     let label = label.into();
     defaults.apply(&label);
@@ -185,7 +187,7 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
             "font" => markup.push_str(&format!("font='{val}' ")),
             "ff" | "font_family" | "face" => markup.push_str(&format!("face='{val}' ")),
             "size" => {
-                if gtk::pango::FontDescription::from_string(val).size() != 0 {
+                if gtk4::pango::FontDescription::from_string(val).size() != 0 {
                     markup.push_str(&format!("size='{val}' "));
                 }
             }
@@ -234,12 +236,12 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
             },
             "font_features" | "features" => markup.push_str(&format!("font_features='{val}' ")),
             "foreground" | "fgcolor" | "color" => {
-                if gtk::gdk::RGBA::parse(val).is_ok() {
+                if gtk4::gdk::RGBA::parse(val).is_ok() {
                     markup.push_str(&format!("color='{val}' "))
                 }
             }
             "background" | "bgcolor" => {
-                if gtk::gdk::RGBA::parse(val).is_ok() {
+                if gtk4::gdk::RGBA::parse(val).is_ok() {
                     markup.push_str(&format!("bgcolor='{val}' "))
                 }
             }
@@ -273,7 +275,7 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
                 _ => markup.push_str("underline='none' "),
             },
             "ulc" | "underline_color" => {
-                if gtk::gdk::RGBA::parse(val).is_ok() {
+                if gtk4::gdk::RGBA::parse(val).is_ok() {
                     markup.push_str(&format!("underline_color='{val}' "))
                 }
             }
@@ -282,7 +284,7 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
                 _ => markup.push_str("overline='none' "),
             },
             "olc" | "overline_color" => {
-                if gtk::gdk::RGBA::parse(val).is_ok() {
+                if gtk4::gdk::RGBA::parse(val).is_ok() {
                     markup.push_str(&format!("overline_color='{val}' "))
                 }
             }
@@ -309,7 +311,7 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
                 _ => markup.push_str("strikethrough='true' "),
             },
             "strikethrough_color" | "scolor" => {
-                if gtk::gdk::RGBA::parse(val).is_ok() {
+                if gtk4::gdk::RGBA::parse(val).is_ok() {
                     markup.push_str(&format!("strikethrough_color='{val}' "))
                 }
             }
@@ -453,7 +455,7 @@ enum TestStyle {
 /* #region Containers */
 fn process_box(children: Children, attributes: Attributes) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
-    let container = gtk::Box::builder().build();
+    let container = gtk4::Box::builder().build();
     for attr in attributes {
         defaults.modify(attr);
     }
@@ -467,7 +469,7 @@ fn process_box(children: Children, attributes: Attributes) -> Option<Widget> {
     Some(container)
 }
 
-fn process_grid(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
+fn process_grid(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
     let mut colhom = true;
     let mut rowhom = false;
     let mut defaults = WidgetDefaults::new();
@@ -484,7 +486,7 @@ fn process_grid(children: Children, attributes: Attributes, parent: &gtk::Box) -
             _ => defaults.modify(attr),
         }
     }
-    let grid = gtk::Grid::builder()
+    let grid = gtk4::Grid::builder()
         .column_homogeneous(colhom)
         .row_homogeneous(rowhom)
         .build();
@@ -543,9 +545,9 @@ enum BoxKind {
 
 /* #endregion Containers */
 /* #region Buttons */
-fn normal_button(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
+fn normal_button(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
-    let button = gtk::Button::builder().build();
+    let button = gtk4::Button::builder().build();
     for attr in attributes {
         defaults.modify(attr);
     }
@@ -560,9 +562,9 @@ fn normal_button(children: Children, attributes: Attributes, parent: &gtk::Box) 
     Some(button)
 }
 
-fn toggle_button(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
+fn toggle_button(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
-    let button = gtk::ToggleButton::builder().build();
+    let button = gtk4::ToggleButton::builder().build();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
@@ -572,7 +574,7 @@ fn toggle_button(children: Children, attributes: Attributes, parent: &gtk::Box) 
             "group" => {
                 let mut child = parent.first_child();
                 while let Some(cur_child) = child {
-                    if let Some(cur_child) = cur_child.downcast_ref::<gtk::ToggleButton>() {
+                    if let Some(cur_child) = cur_child.downcast_ref::<gtk4::ToggleButton>() {
                         if cur_child.widget_name() == attr.value() {
                             button.set_group(Some(cur_child));
                         }
@@ -594,9 +596,13 @@ fn toggle_button(children: Children, attributes: Attributes, parent: &gtk::Box) 
     Some(button)
 }
 
-fn checked_button(children: Children, attributes: Attributes, parent: &gtk::Box) -> Option<Widget> {
+fn checked_button(
+    children: Children,
+    attributes: Attributes,
+    parent: &gtk4::Box,
+) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
-    let button = gtk::CheckButton::builder().build();
+    let button = gtk4::CheckButton::builder().build();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
@@ -606,7 +612,7 @@ fn checked_button(children: Children, attributes: Attributes, parent: &gtk::Box)
             "group" => {
                 let mut child = parent.first_child();
                 while let Some(cur_child) = child {
-                    if let Some(cur_child) = cur_child.downcast_ref::<gtk::CheckButton>() {
+                    if let Some(cur_child) = cur_child.downcast_ref::<gtk4::CheckButton>() {
                         if cur_child.widget_name() == attr.value() {
                             button.set_group(Some(cur_child));
                         }
@@ -619,7 +625,8 @@ fn checked_button(children: Children, attributes: Attributes, parent: &gtk::Box)
     }
     for child in children {
         if let Some(widget) = process_element(&child, parent) {
-            button.set_child(Some(&widget));
+            // POV when gtk4-rs forgot to implement ButtonExt for CheckButton
+            button.set_property("child", Some(&widget));
             break;
         }
     }
@@ -656,8 +663,8 @@ impl Margin {
 }
 #[derive(Debug)]
 struct WidgetDefaults {
-    halign: gtk::Align,
-    valign: gtk::Align,
+    halign: gtk4::Align,
+    valign: gtk4::Align,
     hexpand: bool,
     vexpand: bool,
     tooltip: Option<String>,
@@ -669,8 +676,8 @@ struct WidgetDefaults {
 impl WidgetDefaults {
     pub fn new() -> Self {
         Self {
-            halign: gtk::Align::Start,
-            valign: gtk::Align::Start,
+            halign: gtk4::Align::Start,
+            valign: gtk4::Align::Start,
             hexpand: false,
             vexpand: false,
             tooltip: None,
@@ -683,19 +690,19 @@ impl WidgetDefaults {
         let val = attr.value();
         match attr.name() {
             "_halign" => match val {
-                "fill" => self.halign = gtk::Align::Fill,
-                "start" | "left" => self.halign = gtk::Align::Start,
-                "end" | "right" => self.halign = gtk::Align::End,
-                "center" | "middle" => self.halign = gtk::Align::Center,
-                "baseline" => self.halign = gtk::Align::Baseline,
+                "fill" => self.halign = gtk4::Align::Fill,
+                "start" | "left" => self.halign = gtk4::Align::Start,
+                "end" | "right" => self.halign = gtk4::Align::End,
+                "center" | "middle" => self.halign = gtk4::Align::Center,
+                "baseline" => self.halign = gtk4::Align::Baseline,
                 _ => {}
             },
             "_valign" => match val {
-                "fill" => self.valign = gtk::Align::Fill,
-                "start" | "left" => self.valign = gtk::Align::Start,
-                "end" | "right" => self.valign = gtk::Align::End,
-                "center" | "middle" => self.valign = gtk::Align::Center,
-                "baseline" => self.valign = gtk::Align::Baseline,
+                "fill" => self.valign = gtk4::Align::Fill,
+                "start" | "left" => self.valign = gtk4::Align::Start,
+                "end" | "right" => self.valign = gtk4::Align::End,
+                "center" | "middle" => self.valign = gtk4::Align::Center,
+                "baseline" => self.valign = gtk4::Align::Baseline,
                 _ => {}
             },
             "_hexpand" => match val {

@@ -1,6 +1,6 @@
 use async_std::io;
 use backend::{dns_task, get_stack_info, parse_stack, resolve};
-use gtk::{Application, ApplicationWindow, gdk, glib, prelude::*};
+use gtk4::{Application, ApplicationWindow, gdk, glib, prelude::*};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{env, fs, net::TcpStream, path};
 use tracing::{debug, error, info, trace, warn};
@@ -72,17 +72,17 @@ async fn main() -> glib::ExitCode {
 
 fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) {
     load_css();
-    let mainbox = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
+    let mainbox = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
         .build();
-    let webview = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
+    let webview = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
         .vexpand(true)
         .hexpand(true)
         .build();
-    let scrolled_window = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
+    let scrolled_window = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Automatic)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
         .hexpand(true)
         .vexpand(true)
         .min_content_width(400)
@@ -94,17 +94,17 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
         .default_height(600)
         .default_width(1000)
         .build();
-    let label = gtk::Label::builder()
+    let label = gtk4::Label::builder()
         .label("Enter URL")
         .vexpand(true)
         .css_classes(["title-1"])
         .build();
-    let header_bar = gtk::HeaderBar::new();
-    let search_button = gtk::ToggleButton::new();
+    let header_bar = gtk4::HeaderBar::new();
+    let search_button = gtk4::ToggleButton::new();
     search_button.set_icon_name("system-search-symbolic");
     header_bar.pack_end(&search_button);
-    let search_bar = gtk::SearchBar::builder()
-        .valign(gtk::Align::Start)
+    let search_bar = gtk4::SearchBar::builder()
+        .valign(gtk4::Align::Start)
         .key_capture_widget(&window)
         .build();
     search_bar.set_css_classes(&[""]);
@@ -119,7 +119,7 @@ fn build_ui(app: &Application, caching: bool, data_saver: bool, stacks: String) 
         .sync_create()
         .bidirectional()
         .build();
-    let entry = gtk::SearchEntry::new();
+    let entry = gtk4::SearchEntry::new();
 
     if data_saver {
         unsafe { scrolled_window.set_data("page-content", PageContent::Disabled) };
@@ -285,21 +285,21 @@ fn load_css() {
             return;
         }
     };
-    let provider = gtk::CssProvider::new();
-    let priority = gtk::STYLE_PROVIDER_PRIORITY_APPLICATION;
-    provider.load_from_bytes(&glib::Bytes::from(
-        br#"
+    let provider = gtk4::CssProvider::new();
+    let priority = gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION;
+    provider.load_from_data(
+        r#"
     .redsearch    text {color: #d41818;}
     .greensearch  text {color: #00a900;}
     .yellowsearch text {color: #e38900;}"#,
-    ));
-    gtk::style_context_add_provider_for_display(&display, &provider, priority);
+    );
+    gtk4::style_context_add_provider_for_display(&display, &provider, priority);
 }
 
 fn pre_load_webpage(
     buffer: PageContent,
-    searchbar: &gtk::SearchBar,
-    scrolledwindow: &gtk::ScrolledWindow,
+    searchbar: &gtk4::SearchBar,
+    scrolledwindow: &gtk4::ScrolledWindow,
 ) {
     match &buffer {
         PageContent::Page(pagedata) => match pagedata.1 {
@@ -322,8 +322,8 @@ fn pre_load_webpage(
 
 fn present_cached_webpage(
     buffer: PageContent,
-    searchbar: &gtk::SearchBar,
-    scrolledwindow: &gtk::ScrolledWindow,
+    searchbar: &gtk4::SearchBar,
+    scrolledwindow: &gtk4::ScrolledWindow,
     pagecontent: &Option<PageContent>,
 ) {
     match &buffer {
@@ -349,7 +349,7 @@ fn present_cached_webpage(
     }
 }
 
-async fn try_get_webpage(entry: &gtk::SearchEntry, caching: bool, stacks: &str) -> PageContent {
+async fn try_get_webpage(entry: &gtk4::SearchEntry, caching: bool, stacks: &str) -> PageContent {
     if entry.text().is_empty() {
         return PageContent::Nothing;
     }
@@ -711,7 +711,7 @@ async fn list_stacks() -> String {
     stacks
 }
 
-async fn draw_webpage(address: (String, String), stacks: &str) -> (Option<gtk::Box>, u32) {
+async fn draw_webpage(address: (String, String), stacks: &str) -> (Option<gtk4::Box>, u32) {
     let res = get_data(&address, stacks);
     match res.0 {
         Some(data) => (
@@ -722,8 +722,8 @@ async fn draw_webpage(address: (String, String), stacks: &str) -> (Option<gtk::B
     }
 }
 
-fn no_webpage(err: u32) -> gtk::Box {
-    let label = gtk::Label::builder()
+fn no_webpage(err: u32) -> gtk4::Box {
+    let label = gtk4::Label::builder()
         .label(format!(
             "Error retrieving webpage! {}: {}",
             err,
@@ -732,8 +732,8 @@ fn no_webpage(err: u32) -> gtk::Box {
         .vexpand(true)
         .css_classes(["title-1", "warning"])
         .build();
-    let webview = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
+    let webview = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
         .build();
     webview.append(&label);
     webview
@@ -793,7 +793,7 @@ fn get_data(address: &(String, String), stacks: &str) -> (Option<(Vec<u8>, Strin
 
 #[derive(Debug)]
 enum PageContent {
-    Page((gtk::Box, u32)),
+    Page((gtk4::Box, u32)),
     Status(u32),
     Failure(io::Error),
     Nothing,

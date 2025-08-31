@@ -342,7 +342,7 @@ async fn compare_results(
     }
 }
 
-pub async fn parse_stack(elements: &str, stack: &str, applet: &str) -> Option<gtk::Box> {
+pub async fn parse_stack(elements: &str, stack: &str, applet: &str) -> Option<gtk4::Box> {
     let config_dir = match get_config_dir(applet) {
         Some(dir) => dir,
         None => return None,
@@ -368,13 +368,13 @@ pub async fn parse_stack(elements: &str, stack: &str, applet: &str) -> Option<gt
             .await
     {
         let libloc = path::Path::new(&record.library);
-        pub fn parser(libloc: &path::Path, elements: &str) -> Option<gtk::Box> {
+        pub fn parser(libloc: &path::Path, elements: &str) -> Option<gtk4::Box> {
             unsafe {
                 let lib = match libloading::Library::new(libloc) {
                     Ok(lib) => lib,
                     Err(_) => return None,
                 };
-                let func: libloading::Symbol<fn(elements: String) -> Option<gtk::Box>> =
+                let func: libloading::Symbol<fn(elements: String) -> Option<gtk4::Box>> =
                     match lib.get("get_elements".as_bytes()) {
                         Ok(data) => data,
                         Err(_) => return None,
