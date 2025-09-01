@@ -1,4 +1,4 @@
-use gtk4::{Widget, prelude::*};
+use gtk4::{Widget, glib::ParamFlags, prelude::*};
 use roxmltree::{Attributes, Children, Document, Node, NodeType};
 
 #[unsafe(no_mangle)]
@@ -68,28 +68,34 @@ fn derive_kind(name: &str) -> ElemKind {
         }
         "canvas" | "draw" | "drawingarea" => ElemKind::Canvas(CanvasKind::DrawingArea),
         "gl" | "glarea" => ElemKind::Canvas(CanvasKind::GLArea),
+        "clone" | "cloned" => ElemKind::Cloned,
         _ => ElemKind::Fallback,
     }
 }
 
-fn process_element(element: &Node, parent: &gtk4::Box) -> Option<Widget> {
-    let kind = derive_kind(element.tag_name().name());
+fn process_element(elem: &Node, parent: &gtk4::Box) -> Option<Widget> {
+    let kind = derive_kind(elem.tag_name().name());
     match kind {
-        ElemKind::Label(kind) => process_label(&kind, element.children(), element.attributes()),
+        ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes()),
         ElemKind::Container(BoxKind::Grid) => {
-            process_grid(element.children(), element.attributes(), parent)
+            process_grid(elem.children(), elem.attributes(), parent)
         }
         ElemKind::Container(BoxKind::GridItem) => None,
-        ElemKind::Container(BoxKind::Normal) => {
-            process_box(element.children(), element.attributes())
-        }
+        ElemKind::Container(BoxKind::Normal) => process_box(elem.children(), elem.attributes()),
         ElemKind::Button(kind) => match kind {
-            ButtonKind::Normal => normal_button(element.children(), element.attributes(), parent),
-            ButtonKind::Toggle => toggle_button(element.children(), element.attributes(), parent),
-            ButtonKind::Checked => checked_button(element.children(), element.attributes(), parent),
+            ButtonKind::Normal => normal_button(elem.children(), elem.attributes(), parent),
+            ButtonKind::Toggle => toggle_button(elem.children(), elem.attributes(), parent),
+            ButtonKind::Checked => check_button(elem.children(), elem.attributes(), parent),
         },
-        ElemKind::Canvas(kind) => canvas_area(element.attributes(), kind),
-        ElemKind::Fallback => element
+        ElemKind::Canvas(kind) => canvas_area(elem.attributes(), kind),
+        ElemKind::Cloned => {
+            if !elem.has_children() {
+                process_cloned(elem.attributes(), parent)
+            } else {
+                None
+            }
+        }
+        ElemKind::Fallback => elem
             .text()
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
@@ -97,7 +103,8 @@ fn process_element(element: &Node, parent: &gtk4::Box) -> Option<Widget> {
                 gtk4::Label::builder()
                     .halign(gtk4::Align::Start)
                     .valign(gtk4::Align::Start)
-                    .label(text.trim())
+                    .label(node_escape(text))
+                    .use_markup(true)
                     .build()
                     .into()
             }),
@@ -107,8 +114,7 @@ fn process_element(element: &Node, parent: &gtk4::Box) -> Option<Widget> {
 /* #region Labels */
 fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<Widget> {
     let (text, defaults) = process_text(kind, children, attributes)?;
-    let label = gtk4::Label::builder().use_markup(true).build();
-    label.set_label(&text);
+    let label = gtk4::Label::builder().use_markup(true).label(&text).build();
     let label = label.into();
     defaults.apply(&label);
     Some(label)
@@ -122,8 +128,8 @@ fn process_text(
     let mut markup = String::new();
     let mut defaults = WidgetDefaults::new();
     match kind {
-        Text::Kind(header) => {
-            let (kind, default) = text_kind(header, children, attributes)?;
+        Text::Kind(kind) => {
+            let (kind, default) = text_kind(kind, children, attributes)?;
             defaults = default;
             markup.push_str(&kind);
         }
@@ -162,7 +168,7 @@ fn text_kind(
             }
             NodeType::Text => {
                 if let Some(text) = child.text() {
-                    markup.push_str(&escape(text));
+                    markup.push_str(&node_escape(text));
                 }
             }
             _ => {}
@@ -401,7 +407,7 @@ fn text_style(kind: &TestStyle, children: Children) -> Option<String> {
             }
             NodeType::Text => {
                 if let Some(text) = child.text() {
-                    markup.push_str(&escape(text));
+                    markup.push_str(&node_escape(text));
                 }
             }
             _ => {}
@@ -419,12 +425,17 @@ fn text_style(kind: &TestStyle, children: Children) -> Option<String> {
     Some(markup)
 }
 
-fn escape(line: &str) -> String {
-    line.replace("&", "&amp;")
+fn node_escape(raw: &str) -> String {
+    raw.replace(">", "&gt;")
+        .replace("<", "&lt;")
+        .replace("&", "&amp;")
+}
+fn _attr_escape(raw: &str) -> String {
+    raw.replace("\"", "&quot;")
+        .replace("'", "&apos;")
         .replace(">", "&gt;")
         .replace("<", "&lt;")
-        .replace("'", "&apos;")
-        .replace("\"", "&quot;")
+        .replace("&", "&amp;")
 }
 
 #[derive(Debug, PartialEq)]
@@ -458,10 +469,17 @@ enum TestStyle {
 /* #region Containers */
 fn process_box(children: Children, attributes: Attributes) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
-    let container = gtk4::Box::builder().build();
+    let mut orientation = gtk4::Orientation::Horizontal;
     for attr in attributes {
-        defaults.modify(attr);
+        match attr.name() {
+            "orientation" | "align" => match attr.value() {
+                "vertical" | "v" => orientation = gtk4::Orientation::Vertical,
+                _ => orientation = gtk4::Orientation::Horizontal,
+            },
+            _ => defaults.modify(attr),
+        }
     }
+    let container = gtk4::Box::builder().orientation(orientation).build();
     for child in children {
         if let Some(widget) = process_element(&child, &container) {
             container.append(&widget);
@@ -599,11 +617,7 @@ fn toggle_button(children: Children, attributes: Attributes, parent: &gtk4::Box)
     Some(button)
 }
 
-fn checked_button(
-    children: Children,
-    attributes: Attributes,
-    parent: &gtk4::Box,
-) -> Option<Widget> {
+fn check_button(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
     let mut defaults = WidgetDefaults::new();
     let button = gtk4::CheckButton::builder().build();
     for attr in attributes {
@@ -666,7 +680,133 @@ enum CanvasKind {
     DrawingArea,
 }
 /* #endregion Canvases */
+/* #region Clones */
+fn process_cloned(attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
+    let mut child = None;
+    let mut old_name = None;
+    let mut new_name = None;
+    for attr in attributes {
+        let val = attr.value().trim();
+        if !val.is_empty() {
+            match attr.name() {
+                "object" | "from" | "import" | "src" | "source" => {
+                    old_name = Some(val);
+                }
+                "subject" | "to" | "as" | "dest" | "destination" => {
+                    new_name = Some(val);
+                }
+                _ => {}
+            }
+        }
+    }
+    if old_name == new_name {
+        return None;
+    }
+    let mut loop_child = parent.first_child();
+    if let Some(old_name) = old_name {
+        while let Some(cur_child) = loop_child.as_ref() {
+            if cur_child.widget_name() == old_name {
+                child = clone(cur_child);
+            }
+            loop_child = cur_child.next_sibling();
+        }
+    }
+    child
+}
 
+fn clone<T: IsA<Widget>>(input: &T) -> Option<T> {
+    let obj: &gtk4::glib::Object = input.as_ref().upcast_ref();
+    if input.is::<gtk4::Button>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::Button>().cloned() {
+            let button = gtk4::Button::builder().build();
+            clone_props(&input, &button);
+            if let Some(child) = input.child() {
+                button.set_child(clone(&child).as_ref());
+            }
+            return button.dynamic_cast::<T>().ok();
+        }
+    } else if input.is::<gtk4::ToggleButton>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::ToggleButton>().cloned() {
+            let button = gtk4::ToggleButton::builder().build();
+            clone_props(&input, &button);
+            if let Some(child) = input.child() {
+                button.set_child(clone(&child).as_ref());
+            }
+            return button.dynamic_cast::<T>().ok();
+        }
+    } else if input.is::<gtk4::CheckButton>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::CheckButton>().cloned() {
+            let button = gtk4::CheckButton::builder().build();
+            clone_props(&input, &button);
+            let child = input.property_value("child");
+            if let Ok(Some(child)) = child.get::<Option<gtk4::Widget>>() {
+                button.set_property("child", clone(&child));
+            }
+            return button.dynamic_cast::<T>().ok();
+        }
+    } else if input.is::<gtk4::GLArea>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::GLArea>().cloned() {
+            let area = gtk4::GLArea::builder().build();
+            clone_props(&input, &area);
+            return area.dynamic_cast::<T>().ok();
+        }
+    } else if input.is::<gtk4::DrawingArea>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::DrawingArea>().cloned() {
+            let area = gtk4::DrawingArea::builder().build();
+            clone_props(&input, &area);
+            return area.dynamic_cast::<T>().ok();
+        }
+    } else if input.is::<gtk4::Box>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::Box>().cloned() {
+            let container = gtk4::Box::builder().build();
+            clone_props(&input, &container);
+            let mut child = input.first_child();
+            while let Some(cur_child) = child {
+                if let Some(cur_child) = clone(&cur_child) {
+                    container.append(&cur_child);
+                }
+                child = cur_child.next_sibling();
+            }
+        }
+    } else if input.is::<gtk4::Grid>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::Grid>().cloned() {
+            let container = gtk4::Grid::builder().build();
+            clone_props(&input, &container);
+            let mut child = input.first_child();
+            while let Some(cur_child) = child {
+                let (c, r, w, h) = input.query_child(&cur_child);
+                if let Some(cur_child) = clone(&cur_child) {
+                    container.attach(&cur_child, c, r, w, h);
+                }
+                child = cur_child.next_sibling();
+            }
+        }
+    } else if input.is::<gtk4::Label>() {
+        if let Some(input) = obj.downcast_ref::<gtk4::Label>().cloned() {
+            let label = gtk4::Label::builder().build();
+            clone_props(&input, &label);
+            return label.dynamic_cast::<T>().ok();
+        }
+    }
+    None
+}
+
+fn clone_props<T: IsA<Widget>>(old: &T, new: &T) {
+    let blacklist = ["parent", "child", "icon-name", "layout-manager"];
+    let guard = new.freeze_notify();
+    for prop in old.list_properties() {
+        if !blacklist.contains(&prop.name())
+            && prop.flags().contains(ParamFlags::READWRITE)
+            && !prop.flags().contains(ParamFlags::CONSTRUCT_ONLY)
+        {
+            let val = old.property(prop.name());
+            new.set_property_from_value(prop.name(), &val);
+        }
+    }
+    drop(guard);
+}
+
+/* #endregion Clones */
 #[derive(Debug)]
 struct Margin {
     top: i32,
@@ -786,5 +926,6 @@ enum ElemKind {
     Container(BoxKind),
     Button(ButtonKind),
     Canvas(CanvasKind),
+    Cloned,
     Fallback,
 }
