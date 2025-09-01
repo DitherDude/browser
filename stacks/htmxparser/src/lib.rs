@@ -727,7 +727,9 @@ fn clone<T: IsA<Widget>>(input: &T) -> Option<T> {
         }
     } else if input.is::<gtk4::ToggleButton>() {
         if let Some(input) = obj.downcast_ref::<gtk4::ToggleButton>().cloned() {
-            let button = gtk4::ToggleButton::builder().build();
+            let button = gtk4::ToggleButton::builder()
+                .active(input.is_active())
+                .build();
             clone_props(&input, &button);
             if let Some(child) = input.child() {
                 button.set_child(clone(&child).as_ref());
@@ -736,7 +738,9 @@ fn clone<T: IsA<Widget>>(input: &T) -> Option<T> {
         }
     } else if input.is::<gtk4::CheckButton>() {
         if let Some(input) = obj.downcast_ref::<gtk4::CheckButton>().cloned() {
-            let button = gtk4::CheckButton::builder().build();
+            let button = gtk4::CheckButton::builder()
+                .active(input.is_active())
+                .build();
             clone_props(&input, &button);
             let child = input.property_value("child");
             if let Ok(Some(child)) = child.get::<Option<gtk4::Widget>>() {
@@ -767,6 +771,7 @@ fn clone<T: IsA<Widget>>(input: &T) -> Option<T> {
                 }
                 child = cur_child.next_sibling();
             }
+            return container.dynamic_cast::<T>().ok();
         }
     } else if input.is::<gtk4::Grid>() {
         if let Some(input) = obj.downcast_ref::<gtk4::Grid>().cloned() {
@@ -780,6 +785,7 @@ fn clone<T: IsA<Widget>>(input: &T) -> Option<T> {
                 }
                 child = cur_child.next_sibling();
             }
+            return container.dynamic_cast::<T>().ok();
         }
     } else if input.is::<gtk4::Label>() {
         if let Some(input) = obj.downcast_ref::<gtk4::Label>().cloned() {
@@ -792,7 +798,7 @@ fn clone<T: IsA<Widget>>(input: &T) -> Option<T> {
 }
 
 fn clone_props<T: IsA<Widget>>(old: &T, new: &T) {
-    let blacklist = ["parent", "child", "icon-name", "layout-manager"];
+    let blacklist = ["parent", "child", "icon-name", "layout-manager", "active"];
     let guard = new.freeze_notify();
     for prop in old.list_properties() {
         if !blacklist.contains(&prop.name())
