@@ -1,4 +1,4 @@
-use gtk4::{Widget, glib::ParamFlags, prelude::*};
+use gtk4::{Widget, prelude::*};
 use roxmltree::{Attributes, Children, Document, Node, NodeType};
 
 #[unsafe(no_mangle)]
@@ -13,12 +13,13 @@ pub fn get_elements(markup: String) -> gtk4::Box {
         markup = format!("<xml>{markup}</xml>");
     }
     let _ = gtk4::init();
-    let webview = gtk4::Box::builder()
-        .orientation(gtk4::Orientation::Vertical)
-        .build();
+    let mut data = BoxData::new();
     let tree = match Document::parse(&markup) {
         Ok(tree) => tree,
         Err(e) => {
+            let webview = gtk4::Box::builder()
+                .orientation(gtk4::Orientation::Vertical)
+                .build();
             let label = gtk4::Label::builder()
                 .label(format!("Error parsing HTML! {e}"))
                 .vexpand(true)
@@ -33,13 +34,13 @@ pub fn get_elements(markup: String) -> gtk4::Box {
         {
             continue;
         }
-        if let Some(element) = process_element(&element, &webview) {
-            webview.append(&element);
+        if let Some(element) = process_element(&element, &data) {
+            data.children.push(element);
         } else {
             println!("Unrecognised element: {element:#?}");
         }
     }
-    webview
+    data.build()
 }
 
 fn derive_kind(name: &str) -> ElemKind {
@@ -73,7 +74,7 @@ fn derive_kind(name: &str) -> ElemKind {
     }
 }
 
-fn process_element(elem: &Node, parent: &gtk4::Box) -> Option<Widget> {
+fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
     let kind = derive_kind(elem.tag_name().name());
     match kind {
         ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes()),
@@ -87,7 +88,8 @@ fn process_element(elem: &Node, parent: &gtk4::Box) -> Option<Widget> {
             ButtonKind::Toggle => toggle_button(elem.children(), elem.attributes(), parent),
             ButtonKind::Checked => check_button(elem.children(), elem.attributes(), parent),
         },
-        ElemKind::Canvas(kind) => canvas_area(elem.attributes(), kind),
+        ElemKind::Canvas(CanvasKind::DrawingArea) => drawing_area(elem.attributes()),
+        ElemKind::Canvas(CanvasKind::GLArea) => gl_area(elem.attributes()),
         ElemKind::Cloned => {
             if !elem.has_children() {
                 process_cloned(elem.attributes(), parent)
@@ -100,67 +102,50 @@ fn process_element(elem: &Node, parent: &gtk4::Box) -> Option<Widget> {
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
             .map(|text| {
-                gtk4::Label::builder()
-                    .halign(gtk4::Align::Start)
-                    .valign(gtk4::Align::Start)
-                    .label(node_escape(text))
-                    .use_markup(true)
-                    .build()
-                    .into()
+                let mut data = LabelData::new();
+                data.text = node_escape(text);
+                WidgetData::Label(Box::new(data))
             }),
     }
 }
 
 /* #region Labels */
-fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<Widget> {
-    let (text, defaults) = process_text(kind, children, attributes)?;
-    let label = gtk4::Label::builder().use_markup(true).label(&text).build();
-    let label = label.into();
-    defaults.apply(&label);
-    Some(label)
+fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<WidgetData> {
+    Some(WidgetData::Label(Box::new(process_text(
+        kind, children, attributes,
+    )?)))
 }
 
-fn process_text(
-    kind: &Text,
-    children: Children,
-    attributes: Attributes,
-) -> Option<(String, WidgetDefaults)> {
-    let mut markup = String::new();
-    let mut defaults = WidgetDefaults::new();
+fn process_text(kind: &Text, children: Children, attributes: Attributes) -> Option<LabelData> {
+    let mut data = LabelData::new();
     match kind {
         Text::Kind(kind) => {
-            let (kind, default) = text_kind(kind, children, attributes)?;
-            defaults = default;
-            markup.push_str(&kind);
+            data = text_kind(kind, children, attributes)?;
         }
-        Text::Style(style) => markup.push_str(&text_style(style, children)?),
+        Text::Style(style) => data.text = raw_text_style(style, children)?,
     }
-    Some((markup, defaults))
+    Some(data)
 }
 
-fn text_kind(
-    kind: &TextKind,
-    children: Children,
-    attributes: Attributes,
-) -> Option<(String, WidgetDefaults)> {
-    let mut markup = String::new();
+fn text_kind(kind: &TextKind, children: Children, attributes: Attributes) -> Option<LabelData> {
+    let mut data = text_attributes(attributes);
     for child in children {
         match child.node_type() {
             NodeType::Element => {
                 if let ElemKind::Label(text) = derive_kind(child.tag_name().name()) {
                     match text {
                         Text::Kind(kind) => {
-                            if let Some((data, _)) = process_text(
+                            if let Some(cur_data) = process_text(
                                 &Text::Kind(kind),
                                 child.children(),
                                 child.attributes(),
                             ) {
-                                markup.push_str(&data);
+                                data = cur_data;
                             }
                         }
                         Text::Style(style) => {
-                            if let Some(data) = text_style(&style, child.children()) {
-                                markup.push_str(&data);
+                            if let Some(text) = raw_text_style(&style, child.children()) {
+                                data.text = text;
                             }
                         }
                     }
@@ -168,188 +153,184 @@ fn text_kind(
             }
             NodeType::Text => {
                 if let Some(text) = child.text() {
-                    markup.push_str(&node_escape(text));
+                    data.text = text.to_string();
                 }
             }
             _ => {}
         }
     }
-    let (attributes, defaults) = text_attributes(attributes);
     match kind {
-        TextKind::Header1 => markup = format!("<span size='xx-large' {attributes}>{markup}</span>"),
-        TextKind::Header2 => markup = format!("<span size='x-large' {attributes}>{markup}</span>"),
-        TextKind::Header3 => markup = format!("<span size='large' {attributes}>{markup}</span>"),
-        TextKind::Header4 => markup = format!("<span size='medium' {attributes}>{markup}</span>"),
-        TextKind::Header5 => markup = format!("<span size='small' {attributes}>{markup}</span>"),
-        TextKind::Header6 => markup = format!("<span size='x-small' {attributes}>{markup}</span>"),
-        TextKind::Normal => markup = format!("<span {attributes}>{markup}</span>"),
+        TextKind::Header1 => data.size = Some("xx-large".to_string()),
+        TextKind::Header2 => data.size = Some("x-large".to_string()),
+        TextKind::Header3 => data.size = Some("large".to_string()),
+        TextKind::Header4 => data.size = Some("medium".to_string()),
+        TextKind::Header5 => data.size = Some("small".to_string()),
+        TextKind::Header6 => data.size = Some("x-small".to_string()),
+        TextKind::Normal => {}
     }
-    Some((markup, defaults))
+    Some(data)
 }
 
-fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
-    let mut markup = String::new();
-    let mut defaults = WidgetDefaults::new();
+fn text_attributes(attributes: Attributes) -> LabelData {
+    let mut data = LabelData::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
-            "font" => markup.push_str(&format!("font='{val}' ")),
-            "ff" | "font_family" | "face" => markup.push_str(&format!("face='{val}' ")),
+            "font" => data.font = Some(val.to_string()),
+            "ff" | "font_family" | "face" => data.face = Some(val.to_string()),
             "size" => {
-                if gtk4::pango::FontDescription::from_string(val).size() != 0 {
-                    markup.push_str(&format!("size='{val}' "));
+                let val = gtk4::pango::FontDescription::from_string(val).size();
+                if val != 0 {
+                    data.size = Some(val.to_string());
                 }
             }
             "style" => match val {
-                "o" | "oblique" => markup.push_str("style='oblique' "),
-                "i" | "italic" => markup.push_str("style='italic' "),
-                _ => markup.push_str("style='normal' "),
+                "o" | "oblique" => data.style = Some(l_attr::Style::Oblique),
+                "i" | "italic" => data.style = Some(l_attr::Style::Italic),
+                _ => data.style = Some(l_attr::Style::Normal),
             },
             "weight" => match val {
-                "ul" | "ultralight" => markup.push_str("weight='ultralight' "),
-                "l" | "light" => markup.push_str("weight='light' "),
-                "b" | "bold" => markup.push_str("weight='bold' "),
-                "ub" | "ultrabold" => markup.push_str("weight='ultrabold' "),
-                "h" | "heavy" => markup.push_str("weight='heavy' "),
-                _ => markup.push_str("weight='normal' "),
+                "ul" | "ultralight" => data.weight = Some(l_attr::Weight::UltraLight),
+                "l" | "light" => data.weight = Some(l_attr::Weight::Light),
+                "b" | "bold" => data.weight = Some(l_attr::Weight::Bold),
+                "ub" | "ultrabold" => data.weight = Some(l_attr::Weight::UltraBold),
+                "h" | "heavy" => data.weight = Some(l_attr::Weight::Heavy),
+                _ => data.weight = Some(l_attr::Weight::Normal),
             },
             "variant" => match val {
                 "sc" | "small-caps" | "small_caps" | "smallcaps" => {
-                    markup.push_str("variant='small-caps' ")
+                    data.variant = Some(l_attr::Variant::SmallCaps)
                 }
                 "asc" | "all-small-caps" | "all_small_caps" | "allsmallcaps" => {
-                    markup.push_str("variant='all-small-caps' ")
+                    data.variant = Some(l_attr::Variant::AllSmallCaps)
                 }
                 "pc" | "petite-caps" | "petite_caps" | "petitecaps" => {
-                    markup.push_str("variant='petite-caps' ")
+                    data.variant = Some(l_attr::Variant::PetiteCaps)
                 }
                 "apc" | "all-petite-caps" | "all_petite_caps" | "allpetitecaps" => {
-                    markup.push_str("variant='all-petite-caps' ")
+                    data.variant = Some(l_attr::Variant::AllPetiteCaps)
                 }
-                "uc" | "unicase" => markup.push_str("variant='unicase' "),
+                "uc" | "unicase" => data.variant = Some(l_attr::Variant::Unicase),
                 "tc" | "title-caps" | "title_caps" | "titlecaps" => {
-                    markup.push_str("variant='title-caps' ")
+                    data.variant = Some(l_attr::Variant::TitleCaps)
                 }
-                _ => markup.push_str("variant='normal' "),
+                _ => data.variant = Some(l_attr::Variant::Normal),
             },
             "stretch" => match val {
-                "uc" | "ultracondensed" => markup.push_str("stretch='ultracondensed' "),
-                "ec" | "extracondensed" => markup.push_str("stretch='extracondensed' "),
-                "c" | "condensed" => markup.push_str("stretch='condensed' "),
-                "sc" | "semicondensed" => markup.push_str("stretch='semicondensed' "),
-                "se" | "semiexpanded" => markup.push_str("stretch='semiexpanded' "),
-                "e" | "expanded" => markup.push_str("stretch='expanded' "),
-                "ee" | "extraexpanded" => markup.push_str("stretch='extraexpanded' "),
-                "ue" | "ultraexpanded" => markup.push_str("stretch='ultraexpanded' "),
-                _ => markup.push_str("stretch='normal' "),
+                "uc" | "ultracondensed" => data.stretch = Some(l_attr::Stretch::UltraCondensed),
+                "ec" | "extracondensed" => data.stretch = Some(l_attr::Stretch::ExtraCondensed),
+                "c" | "condensed" => data.stretch = Some(l_attr::Stretch::Condensed),
+                "sc" | "semicondensed" => data.stretch = Some(l_attr::Stretch::SemiCondensed),
+                "se" | "semiexpanded" => data.stretch = Some(l_attr::Stretch::SemiExpanded),
+                "e" | "expanded" => data.stretch = Some(l_attr::Stretch::Expanded),
+                "ee" | "extraexpanded" => data.stretch = Some(l_attr::Stretch::ExtraExpanded),
+                "ue" | "ultraexpanded" => data.stretch = Some(l_attr::Stretch::UltraExpanded),
+                _ => data.stretch = Some(l_attr::Stretch::Normal),
             },
-            "font_features" | "features" => markup.push_str(&format!("font_features='{val}' ")),
+            "font_features" | "features" => data.features = Some(val.to_string()),
             "foreground" | "fgcolor" | "color" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
-                    markup.push_str(&format!("color='{val}' "))
+                    data.fcolor = Some(val.to_string());
                 }
             }
             "background" | "bgcolor" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
-                    markup.push_str(&format!("bgcolor='{val}' "))
+                    data.bcolor = Some(val.to_string());
                 }
             }
             "alpha" | "fgalpha" => {
                 if let Ok(val) = val.parse::<u16>() {
-                    markup.push_str(&format!("alpha='{}' ", val as u32 + 1));
+                    data.falpha = Some(format!("{}", val as u32 + 1));
                 } else if val
                     .strip_suffix("%")
                     .filter(|x| x.parse::<u8>().is_ok_and(|x| x <= 100))
                     .is_some()
                 {
-                    markup.push_str(&format!("alpha='{val}' "))
+                    data.falpha = Some(val.to_string());
                 }
             }
             "background_alpha" | "bgalpha" => {
                 if let Ok(val) = val.parse::<u16>() {
-                    markup.push_str(&format!("bgalpha='{}' ", val as u32 + 1));
+                    data.balpha = Some(format!("{}", val as u32 + 1));
                 } else if val
                     .strip_suffix("%")
                     .filter(|x| x.parse::<u8>().is_ok_and(|x| x <= 100))
                     .is_some()
                 {
-                    markup.push_str(&format!("bgalpha='{val}' "))
+                    data.balpha = Some(val.to_string());
                 }
             }
             "underline" => match val {
-                "s" | "single" => markup.push_str("underline='single' "),
-                "d" | "double" => markup.push_str("underline='double' "),
-                "l" | "low" => markup.push_str("underline='low' "),
-                "e" | "error" => markup.push_str("underline='error' "),
-                _ => markup.push_str("underline='none' "),
+                "s" | "single" => data.underline = Some(l_attr::UnderLine::Single),
+                "d" | "double" => data.underline = Some(l_attr::UnderLine::Double),
+                "l" | "low" => data.underline = Some(l_attr::UnderLine::Low),
+                "e" | "error" => data.underline = Some(l_attr::UnderLine::Error),
+                _ => data.underline = Some(l_attr::UnderLine::None),
             },
             "ulc" | "underline_color" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
-                    markup.push_str(&format!("underline_color='{val}' "))
+                    data.ulc = Some(val.to_string());
                 }
             }
             "overline" => match val {
-                "s" | "single" => markup.push_str("overline='single' "),
-                _ => markup.push_str("overline='none' "),
+                "n" | "none" | "no" | "f" | "false" => data.overline = false,
+                _ => data.overline = true,
             },
             "olc" | "overline_color" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
-                    markup.push_str(&format!("overline_color='{val}' "))
+                    data.olc = Some(val.to_string());
                 }
             }
             "rise" => {
                 if val.strip_suffix("pt").unwrap_or(val).parse::<i32>().is_ok() {
-                    markup.push_str(&format!("rise='{val}' "));
+                    data.rise = Some(val.to_string());
                 }
             }
             "baseline_shift" | "fall" => {
                 if val.strip_suffix("pt").unwrap_or(val).parse::<i32>().is_ok() {
-                    markup.push_str(&format!("baseline_shift='{val}' "));
+                    data.fall = Some(val.to_string());
                 }
             }
             "font_scale" | "scale" => match val {
-                "sup" | "superscript" => markup.push_str("font_scale='superscript' "),
-                "sub" | "subscript" => markup.push_str("font_scale='subscript' "),
+                "sup" | "superscript" => data.scale = Some(l_attr::Scale::Superscript),
+                "sub" | "subscript" => data.scale = Some(l_attr::Scale::Subscript),
                 "sc" | "small-caps" | "small_caps" | "smallcaps" => {
-                    markup.push_str("font_scale='small-caps' ")
+                    data.scale = Some(l_attr::Scale::SmallCaps)
                 }
                 _ => {}
             },
             "s" | "strikethrough" => match val.to_lowercase().as_str() {
-                "n" | "f" | "no" | "false" => markup.push_str("strikethrough='false' "),
-                _ => markup.push_str("strikethrough='true' "),
+                "n" | "no" | "f" | "false" => data.strikethrough = false,
+                _ => data.strikethrough = true,
             },
             "strikethrough_color" | "scolor" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
-                    markup.push_str(&format!("strikethrough_color='{val}' "))
+                    data.scolor = Some(val.to_string());
                 }
             }
             "fallback" => match val.to_lowercase().as_str() {
-                "n" | "f" | "no" | "false" => markup.push_str("fallback='false' "),
-                _ => markup.push_str("fallback='true' "),
+                "n" | "f" | "no" | "false" => data.fallback = false,
+                _ => data.fallback = true,
             },
-            "lang" => markup.push_str(&format!("lang='{val}' ")),
+            "lang" => data.lang = Some(val.to_string()),
             "letter_spacing" | "spacing" => {
-                if val
-                    .strip_suffix("pt")
-                    .unwrap_or(val)
-                    .parse::<f64>()
-                    .is_ok_and(|x| x >= 0f64)
-                {
-                    markup.push_str(&format!("letter_spacing='{val}' "))
+                if let Ok(val) = val.strip_suffix("pt").unwrap_or(val).parse::<f64>() {
+                    if val >= 0f64 {
+                        data.spacing = Some(val);
+                    }
                 }
             }
             "gravity" => match val {
-                "south" | "bottom" => markup.push_str("gravity='south' "),
-                "east" | "right" => markup.push_str("gravity='east' "),
-                "north" | "top" => markup.push_str("gravity='north' "),
-                "west" | "left" => markup.push_str("gravity='west' "),
-                _ => markup.push_str("gravity='auto' "),
+                "south" | "bottom" => data.gravity = Some(l_attr::Gravity::South),
+                "east" | "right" => data.gravity = Some(l_attr::Gravity::East),
+                "north" | "top" => data.gravity = Some(l_attr::Gravity::North),
+                "west" | "left" => data.gravity = Some(l_attr::Gravity::West),
+                _ => data.gravity = Some(l_attr::Gravity::Auto),
             },
             "gravity_hint" | "hint" => match val {
-                "s" | "strong" => markup.push_str("gravity_hint='strong' "),
-                "l" | "line" => markup.push_str("gravity_hint='line' "),
-                _ => markup.push_str("gravity_hint='natural' "),
+                "s" | "strong" => data.hint = Some(l_attr::GravityHint::Strong),
+                "l" | "line" => data.hint = Some(l_attr::GravityHint::Line),
+                _ => data.hint = Some(l_attr::GravityHint::Natural),
             },
             "show" => {
                 if val
@@ -357,16 +338,16 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
                     .all(|x| ["spaces", "line-breaks", "ignorables"].contains(&x))
                     || val == "none"
                 {
-                    markup.push_str(&format!("show='{val}' "));
+                    data.show = Some(val.to_string());
                 }
             }
             "insert_hyphens" | "hyphens" => match val.to_lowercase().as_str() {
-                "n" | "f" | "no" | "false" => markup.push_str("insert_hyphens='false' "),
-                _ => markup.push_str("insert_hyphens='true' "),
+                "n" | "f" | "no" | "false" => data.hyphens = false,
+                _ => data.hyphens = true,
             },
             "allow_breaks" | "breaks" => match val.to_lowercase().as_str() {
-                "n" | "f" | "no" | "false" => markup.push_str("allow_breaks='false' "),
-                _ => markup.push_str("allow_breaks='true' "),
+                "n" | "f" | "no" | "false" => data.breaks = false,
+                _ => data.breaks = true,
             },
             "line_height" | "height" => {
                 if val
@@ -374,33 +355,386 @@ fn text_attributes(attributes: Attributes) -> (String, WidgetDefaults) {
                     .is_some_and(|x| x.parse::<f64>().is_ok_and(|x| x >= 0f64))
                     || val.parse::<u16>().is_ok_and(|x| x < 1024)
                 {
-                    markup.push_str(&format!("line_height='{val} '"));
+                    data.height = Some(val.to_string());
                 }
             }
             "text_transform" | "transform" => match val {
-                "l" | "lowercase" => markup.push_str("text_transform='lowercase' "),
-                "u" | "uppercase" => markup.push_str("text_transform='uppercase' "),
-                "c" | "capitalize" => markup.push_str("text_transform='capitalize' "),
-                _ => markup.push_str("text_transform='none' "),
+                "l" | "lowercase" => data.transform = Some(l_attr::Transform::Lowercase),
+                "u" | "uppercase" => data.transform = Some(l_attr::Transform::Uppercase),
+                "c" | "capitalize" => data.transform = Some(l_attr::Transform::Capitalize),
+                _ => data.transform = Some(l_attr::Transform::None),
             },
             "segment" => match val {
-                "w" | "word" => markup.push_str("segment='word' "),
-                "s" | "sentence" => markup.push_str("segment='sentence' "),
+                "w" | "word" => data.segment = Some(l_attr::Segment::Word),
+                "s" | "sentence" => data.segment = Some(l_attr::Segment::Sentence),
                 _ => {}
             },
-            _ => defaults.modify(attr),
+            _ => data.defaults.modify(attr),
         };
     }
-    (markup, defaults)
+    data
 }
 
-fn text_style(kind: &TestStyle, children: Children) -> Option<String> {
+mod l_attr {
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Style {
+        Italic,
+        Oblique,
+        Normal,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Weight {
+        UltraLight,
+        Light,
+        Normal,
+        Bold,
+        UltraBold,
+        Heavy,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Variant {
+        SmallCaps,
+        AllSmallCaps,
+        PetiteCaps,
+        AllPetiteCaps,
+        Unicase,
+        TitleCaps,
+        Normal,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Stretch {
+        UltraCondensed,
+        ExtraCondensed,
+        Condensed,
+        SemiCondensed,
+        Normal,
+        SemiExpanded,
+        Expanded,
+        ExtraExpanded,
+        UltraExpanded,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum UnderLine {
+        Single,
+        Double,
+        Low,
+        Error,
+        None,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Scale {
+        Superscript,
+        Subscript,
+        SmallCaps,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Gravity {
+        South,
+        East,
+        North,
+        West,
+        Auto,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum GravityHint {
+        Strong,
+        Line,
+        Natural,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Transform {
+        Lowercase,
+        Uppercase,
+        Capitalize,
+        None,
+    }
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Segment {
+        Word,
+        Sentence,
+    }
+}
+#[derive(Debug, PartialEq, Clone)]
+struct LabelData {
+    defaults: WidgetDefaults,
+    text: String,
+    font: Option<String>,
+    face: Option<String>,
+    size: Option<String>,
+    style: Option<l_attr::Style>,
+    weight: Option<l_attr::Weight>,
+    variant: Option<l_attr::Variant>,
+    stretch: Option<l_attr::Stretch>,
+    features: Option<String>,
+    fcolor: Option<String>,
+    bcolor: Option<String>,
+    falpha: Option<String>,
+    balpha: Option<String>,
+    underline: Option<l_attr::UnderLine>,
+    ulc: Option<String>,
+    overline: bool,
+    olc: Option<String>,
+    rise: Option<String>,
+    fall: Option<String>,
+    scale: Option<l_attr::Scale>,
+    strikethrough: bool,
+    scolor: Option<String>,
+    fallback: bool,
+    lang: Option<String>,
+    spacing: Option<f64>,
+    gravity: Option<l_attr::Gravity>,
+    hint: Option<l_attr::GravityHint>,
+    show: Option<String>,
+    hyphens: bool,
+    breaks: bool,
+    height: Option<String>,
+    transform: Option<l_attr::Transform>,
+    segment: Option<l_attr::Segment>,
+}
+impl LabelData {
+    pub fn new() -> Self {
+        LabelData {
+            defaults: WidgetDefaults::new(),
+            text: String::new(),
+            font: None,
+            face: None,
+            size: None,
+            style: None,
+            weight: None,
+            variant: None,
+            stretch: None,
+            features: None,
+            fcolor: None,
+            bcolor: None,
+            falpha: None,
+            balpha: None,
+            underline: None,
+            ulc: None,
+            overline: false,
+            olc: None,
+            rise: None,
+            fall: None,
+            scale: None,
+            strikethrough: false,
+            scolor: None,
+            fallback: false,
+            lang: None,
+            spacing: None,
+            gravity: None,
+            hint: None,
+            show: None,
+            hyphens: false,
+            breaks: true,
+            height: None,
+            transform: None,
+            segment: None,
+        }
+    }
+    pub fn compile(&self) -> String {
+        let mut a = String::new();
+        if let Some(font) = &self.font {
+            a.push_str(&format!("font='{font}' "));
+        }
+        if let Some(face) = &self.face {
+            a.push_str(&format!("face='{face}' "))
+        }
+        if let Some(size) = &self.size {
+            a.push_str(&format!("size='{size}' "))
+        }
+        if let Some(style) = &self.style {
+            a.push_str(&format!(
+                "style='{}' ",
+                match *style {
+                    l_attr::Style::Oblique => "oblique",
+                    l_attr::Style::Italic => "italic",
+                    l_attr::Style::Normal => "normal",
+                }
+            ));
+        }
+        if let Some(weight) = &self.weight {
+            a.push_str(&format!(
+                "weight='{}' ",
+                match *weight {
+                    l_attr::Weight::UltraLight => "ultralight",
+                    l_attr::Weight::Light => "light",
+                    l_attr::Weight::Normal => "normal",
+                    l_attr::Weight::Bold => "bold",
+                    l_attr::Weight::UltraBold => "ultrabold",
+                    l_attr::Weight::Heavy => "heavy",
+                }
+            ));
+        }
+        if let Some(variant) = &self.variant {
+            a.push_str(&format!(
+                "variant='{}' ",
+                match *variant {
+                    l_attr::Variant::SmallCaps => "small-caps",
+                    l_attr::Variant::AllSmallCaps => "all-small-caps",
+                    l_attr::Variant::PetiteCaps => "petite-caps",
+                    l_attr::Variant::AllPetiteCaps => "all-petite-caps",
+                    l_attr::Variant::Unicase => "unicase",
+                    l_attr::Variant::TitleCaps => "title-caps",
+                    l_attr::Variant::Normal => "normal",
+                }
+            ));
+        }
+        if let Some(stretch) = &self.stretch {
+            a.push_str(&format!(
+                "stretch='{}' ",
+                match *stretch {
+                    l_attr::Stretch::UltraCondensed => "ultracondensed",
+                    l_attr::Stretch::ExtraCondensed => "extracondensed",
+                    l_attr::Stretch::Condensed => "condensed",
+                    l_attr::Stretch::SemiCondensed => "semicondensed",
+                    l_attr::Stretch::Normal => "normal",
+                    l_attr::Stretch::SemiExpanded => "semiexpanded",
+                    l_attr::Stretch::Expanded => "expanded",
+                    l_attr::Stretch::ExtraExpanded => "extraexpanded",
+                    l_attr::Stretch::UltraExpanded => "ultraexpanded",
+                }
+            ));
+        }
+        if let Some(features) = &self.features {
+            a.push_str(&format!("font_features='{features}' "));
+        }
+        if let Some(color) = &self.fcolor {
+            a.push_str(&format!("color='{color}' "));
+        }
+        if let Some(color) = &self.bcolor {
+            a.push_str(&format!("bgcolor='{color}' "));
+        }
+        if let Some(alpha) = &self.falpha {
+            a.push_str(&format!("alpha='{alpha}' "));
+        }
+        if let Some(alpha) = &self.balpha {
+            a.push_str(&format!("bgalpha='{alpha}' "));
+        }
+        if let Some(underline) = &self.underline {
+            a.push_str(&format!(
+                "underline='{}' ",
+                match *underline {
+                    l_attr::UnderLine::Single => "single",
+                    l_attr::UnderLine::Double => "double",
+                    l_attr::UnderLine::Low => "low",
+                    l_attr::UnderLine::Error => "error",
+                    l_attr::UnderLine::None => "none",
+                }
+            ));
+        }
+        if let Some(color) = &self.ulc {
+            a.push_str(&format!("underline_color='{color}' "));
+        }
+        if self.overline {
+            a.push_str("overline='single' ");
+        }
+        if let Some(color) = &self.olc {
+            a.push_str(&format!("overline_color='{color}' "));
+        }
+        if let Some(rise) = &self.rise {
+            a.push_str(&format!("rise='{rise}' "));
+        }
+        if let Some(fall) = &self.fall {
+            a.push_str(&format!("baseline_shift='{fall}' "));
+        }
+        if let Some(scale) = &self.scale {
+            a.push_str(&format!(
+                "font_scale='{}' ",
+                match *scale {
+                    l_attr::Scale::Superscript => "superscript",
+                    l_attr::Scale::Subscript => "subscript",
+                    l_attr::Scale::SmallCaps => "small-caps",
+                }
+            ));
+        }
+        if self.strikethrough {
+            a.push_str("strikethrough='true' ");
+        }
+        if let Some(color) = &self.scolor {
+            a.push_str(&format!("strikethrough_color='{color}' "));
+        }
+        if !self.fallback {
+            a.push_str("fallback='false' ");
+        }
+        if let Some(lang) = &self.lang {
+            a.push_str(&format!("lang='{lang}' "));
+        }
+        if let Some(spacing) = &self.spacing {
+            a.push_str(&format!("letter_spacing='{spacing}pt' "));
+        }
+        if let Some(gravity) = &self.gravity {
+            a.push_str(&format!(
+                "gravity='{}' ",
+                match gravity {
+                    l_attr::Gravity::South => "south",
+                    l_attr::Gravity::East => "east",
+                    l_attr::Gravity::North => "north",
+                    l_attr::Gravity::West => "west",
+                    l_attr::Gravity::Auto => "auto",
+                }
+            ));
+        }
+        if let Some(hint) = &self.hint {
+            a.push_str(&format!(
+                "gravity_hint='{}' ",
+                match hint {
+                    l_attr::GravityHint::Strong => "strong",
+                    l_attr::GravityHint::Line => "line",
+                    l_attr::GravityHint::Natural => "natural",
+                }
+            ));
+        }
+        if let Some(show) = &self.show {
+            a.push_str(&format!("show='{show}' "));
+        }
+        if self.hyphens {
+            a.push_str("insert_hyphens='true' ");
+        }
+        if self.breaks {
+            a.push_str("allow_breaks='true' ");
+        }
+        if let Some(height) = &self.height {
+            a.push_str(&format!("line_height='{height}' "));
+        }
+        if let Some(transform) = &self.transform {
+            a.push_str(&format!(
+                "text_transform='{}' ",
+                match transform {
+                    l_attr::Transform::Lowercase => "lowercase",
+                    l_attr::Transform::Uppercase => "uppercase",
+                    l_attr::Transform::Capitalize => "capitalize",
+                    l_attr::Transform::None => "none",
+                }
+            ));
+        }
+        if let Some(segment) = &self.segment {
+            a.push_str(&format!(
+                "segment='{}' ",
+                match segment {
+                    l_attr::Segment::Word => "word",
+                    l_attr::Segment::Sentence => "sentence",
+                }
+            ));
+        }
+        a
+    }
+    pub fn build(&self) -> gtk4::Label {
+        let markup = format!(
+            "<span {}>{}</span>",
+            self.compile(),
+            node_escape(&self.text)
+        );
+        let label = gtk4::Label::builder().use_markup(true).label(markup);
+        label.build()
+    }
+}
+
+fn raw_text_style(kind: &TestStyle, children: Children) -> Option<String> {
     let mut markup = String::new();
     for child in children {
         match child.node_type() {
             NodeType::Element => {
                 if let ElemKind::Label(Text::Style(style)) = derive_kind(child.tag_name().name()) {
-                    if let Some(data) = text_style(&style, child.children()) {
+                    if let Some(data) = raw_text_style(&style, child.children()) {
                         markup.push_str(&data);
                     }
                 }
@@ -438,13 +772,13 @@ fn _attr_escape(raw: &str) -> String {
         .replace("&", "&amp;")
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum Text {
     Kind(TextKind),
     Style(TestStyle),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum TextKind {
     Header1,
     Header2,
@@ -455,7 +789,7 @@ enum TextKind {
     Normal,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum TestStyle {
     Bold,
     Italic,
@@ -467,193 +801,331 @@ enum TestStyle {
 }
 /* #endregion Labels */
 /* #region Containers */
-fn process_box(children: Children, attributes: Attributes) -> Option<Widget> {
-    let mut defaults = WidgetDefaults::new();
-    let mut orientation = gtk4::Orientation::Horizontal;
+fn process_box(children: Children, attributes: Attributes) -> Option<WidgetData> {
+    let mut data = BoxData::new();
     for attr in attributes {
         match attr.name() {
             "orientation" | "align" => match attr.value() {
-                "vertical" | "v" => orientation = gtk4::Orientation::Vertical,
-                _ => orientation = gtk4::Orientation::Horizontal,
+                "horizontal" | "h" => data.orientation = gtk4::Orientation::Horizontal,
+                _ => data.orientation = gtk4::Orientation::Vertical,
             },
-            _ => defaults.modify(attr),
+            _ => data.defaults.modify(attr),
         }
     }
-    let container = gtk4::Box::builder().orientation(orientation).build();
     for child in children {
-        if let Some(widget) = process_element(&child, &container) {
-            container.append(&widget);
+        if let Some(child) = process_element(&child, &data) {
+            data.children.push(child);
         }
     }
-    let container = container.into();
-    defaults.apply(&container);
-    Some(container)
+    Some(WidgetData::Box(data))
 }
 
-fn process_grid(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
-    let mut colhom = true;
-    let mut rowhom = false;
-    let mut defaults = WidgetDefaults::new();
+#[derive(Debug, PartialEq, Clone)]
+struct BoxData {
+    defaults: WidgetDefaults,
+    orientation: gtk4::Orientation,
+    children: Vec<WidgetData>,
+}
+
+impl BoxData {
+    pub fn new() -> Self {
+        BoxData {
+            defaults: WidgetDefaults::new(),
+            orientation: gtk4::Orientation::Vertical,
+            children: Vec::new(),
+        }
+    }
+    pub fn build(&self) -> gtk4::Box {
+        let widget = gtk4::Box::builder().orientation(self.orientation).build();
+        self.defaults.apply(&widget);
+        for child in &self.children {
+            widget.append(&child.build(&widget));
+        }
+        widget
+    }
+}
+
+fn process_grid(
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    let mut data = GridData::new();
     for attr in attributes {
         match attr.name() {
             "column_homogeneous" | "col" => match attr.value() {
-                "n" | "f" | "no" | "false" => colhom = false,
-                _ => colhom = true,
+                "n" | "f" | "no" | "false" => data.col_hom = false,
+                _ => data.col_hom = true,
             },
             "row_homogeneous" | "row" => match attr.value() {
-                "n" | "f" | "no" | "false" => rowhom = false,
-                _ => rowhom = true,
+                "n" | "f" | "no" | "false" => data.row_hom = false,
+                _ => data.row_hom = true,
             },
-            _ => defaults.modify(attr),
+            _ => data.defaults.modify(attr),
         }
     }
-    let grid = gtk4::Grid::builder()
-        .column_homogeneous(colhom)
-        .row_homogeneous(rowhom)
-        .build();
     for child in children {
         if derive_kind(child.tag_name().name()) != ElemKind::Container(BoxKind::GridItem) {
             println!("Expected GridItem, found: {child:?}");
             continue;
         }
-        let (mut column, mut row, mut width, mut height) = (0i32, 0i32, 0i32, 0i32);
+        let mut loc = (0i32, 0i32, 0i32, 0i32);
         for attr in child.attributes() {
             let val = attr.value();
             match attr.name() {
                 "c" | "column" => {
                     if let Ok(val) = val.parse::<i32>() {
-                        column = val;
+                        loc.0 = val;
                     }
                 }
                 "r" | "row" => {
                     if let Ok(val) = val.parse::<i32>() {
-                        row = val;
+                        loc.1 = val;
                     }
                 }
                 "w" | "width" => {
                     if let Ok(val) = val.parse::<i32>() {
-                        width = val;
+                        loc.2 = val;
                     }
                 }
                 "h" | "height" => {
                     if let Ok(val) = val.parse::<i32>() {
-                        height = val;
+                        loc.3 = val;
                     }
                 }
                 _ => {}
             };
         }
-        for baby in child.children() {
-            if baby.is_text() && baby.text().is_some_and(|x| x.trim().is_empty()) {
+        for child in child.children() {
+            if child.is_text() && child.text().is_some_and(|x| x.trim().is_empty()) {
                 continue;
-            } else if let Some(widget) = process_element(&baby, parent) {
-                grid.attach(&widget, column, row, width, height);
+            } else if let Some(widget) = process_element(&child, parent) {
+                data.children.push((widget, loc));
                 break;
             }
         }
     }
-    let grid = grid.into();
-    defaults.apply(&grid);
-    Some(grid)
+    Some(WidgetData::Grid(data))
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum BoxKind {
     Grid,
     GridItem,
     Normal,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+struct GridData {
+    defaults: WidgetDefaults,
+    col_hom: bool,
+    row_hom: bool,
+    children: Vec<(WidgetData, (i32, i32, i32, i32))>,
+}
+
+impl GridData {
+    pub fn new() -> Self {
+        GridData {
+            defaults: WidgetDefaults::new(),
+            col_hom: true,
+            row_hom: true,
+            children: Vec::new(),
+        }
+    }
+    pub fn build(&self, parent: &gtk4::Box) -> gtk4::Grid {
+        let widget = gtk4::Grid::builder()
+            .column_homogeneous(self.col_hom)
+            .row_homogeneous(self.row_hom)
+            .build();
+        self.defaults.apply(&widget);
+        for child in &self.children {
+            let loc = child.1;
+            widget.attach(&child.0.build(parent), loc.0, loc.1, loc.2, loc.3);
+        }
+        widget
+    }
+}
+
 /* #endregion Containers */
 /* #region Buttons */
-fn normal_button(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
-    let mut defaults = WidgetDefaults::new();
-    let button = gtk4::Button::builder().build();
+fn normal_button(
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    let mut data = ButtonData::new();
     for attr in attributes {
-        defaults.modify(attr);
+        data.defaults.modify(attr);
     }
     for child in children {
         if let Some(widget) = process_element(&child, parent) {
-            button.set_child(Some(&widget));
+            data.child = Some(Box::from(widget));
             break;
         }
     }
-    let button = button.into();
-    defaults.apply(&button);
-    Some(button)
+    Some(WidgetData::Button(data))
 }
 
-fn toggle_button(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
-    let mut defaults = WidgetDefaults::new();
-    let button = gtk4::ToggleButton::builder().build();
+#[derive(Debug, PartialEq, Clone)]
+struct ButtonData {
+    defaults: WidgetDefaults,
+    child: Option<Box<WidgetData>>,
+}
+
+impl ButtonData {
+    pub fn new() -> Self {
+        ButtonData {
+            defaults: WidgetDefaults::new(),
+            child: None,
+        }
+    }
+    pub fn build(&self, parent: &gtk4::Box) -> gtk4::Button {
+        let widget = gtk4::Button::builder().build();
+        self.defaults.apply(&widget);
+        if let Some(child) = &self.child {
+            let child = child.build(parent);
+            widget.set_child(Some(&child));
+        }
+        widget
+    }
+}
+
+fn toggle_button(
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    let mut data = ToggleButtonData::new();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
-                "no" | "n" | "false" | "f" => button.set_active(false),
-                _ => button.set_active(true),
+                "no" | "n" | "false" | "f" => data.checked = false,
+                _ => data.checked = true,
             },
             "group" => {
-                let mut child = parent.first_child();
-                while let Some(cur_child) = child {
-                    if let Some(cur_child) = cur_child.downcast_ref::<gtk4::ToggleButton>() {
-                        if cur_child.widget_name() == attr.value() {
-                            button.set_group(Some(cur_child));
-                        }
-                    }
-                    child = cur_child.next_sibling();
-                }
+                data.group = Some(attr.value().to_string());
             }
-            _ => defaults.modify(attr),
+            _ => data.defaults.modify(attr),
         }
     }
     for child in children {
         if let Some(widget) = process_element(&child, parent) {
-            button.set_child(Some(&widget));
+            data.child = Some(Box::from(widget));
             break;
         }
     }
-    let button = button.into();
-    defaults.apply(&button);
-    Some(button)
+    Some(WidgetData::ToggleButton(data))
 }
 
-fn check_button(children: Children, attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
-    let mut defaults = WidgetDefaults::new();
-    let button = gtk4::CheckButton::builder().build();
+#[derive(Debug, PartialEq, Clone)]
+struct ToggleButtonData {
+    defaults: WidgetDefaults,
+    checked: bool,
+    group: Option<String>,
+    child: Option<Box<WidgetData>>,
+}
+
+impl ToggleButtonData {
+    pub fn new() -> Self {
+        ToggleButtonData {
+            defaults: WidgetDefaults::new(),
+            checked: false,
+            group: None,
+            child: None,
+        }
+    }
+    pub fn build(&self, parent: &gtk4::Box) -> gtk4::ToggleButton {
+        let widget = gtk4::ToggleButton::builder().active(self.checked).build();
+        self.defaults.apply(&widget);
+        if let Some(group) = &self.group {
+            let mut child = parent.first_child();
+            while let Some(cur_child) = child {
+                if let Some(cur_child) = cur_child.downcast_ref::<gtk4::ToggleButton>() {
+                    if cur_child.widget_name() == *group {
+                        widget.set_group(Some(cur_child));
+                    }
+                }
+                child = cur_child.next_sibling();
+            }
+        }
+        if let Some(child) = &self.child {
+            let child = child.build(parent);
+            widget.set_child(Some(&child));
+        }
+        widget
+    }
+}
+
+fn check_button(
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    let mut data = CheckButtonData::new();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
-                "no" | "n" | "false" | "f" => button.set_active(false),
-                _ => button.set_active(true),
+                "no" | "n" | "false" | "f" => data.checked = false,
+                _ => data.checked = true,
             },
             "group" => {
-                let mut child = parent.first_child();
-                while let Some(cur_child) = child {
-                    if let Some(cur_child) = cur_child.downcast_ref::<gtk4::CheckButton>() {
-                        if cur_child.widget_name() == attr.value() {
-                            button.set_group(Some(cur_child));
-                        }
-                    }
-                    child = cur_child.next_sibling();
-                }
+                data.group = Some(attr.value().to_string());
             }
-            _ => defaults.modify(attr),
+            _ => data.defaults.modify(attr),
         }
     }
     for child in children {
         if let Some(widget) = process_element(&child, parent) {
+            data.child = Some(Box::from(widget));
+            break;
+        }
+    }
+    Some(WidgetData::CheckButton(data))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct CheckButtonData {
+    defaults: WidgetDefaults,
+    checked: bool,
+    group: Option<String>,
+    child: Option<Box<WidgetData>>,
+}
+
+impl CheckButtonData {
+    pub fn new() -> Self {
+        CheckButtonData {
+            defaults: WidgetDefaults::new(),
+            checked: false,
+            group: None,
+            child: None,
+        }
+    }
+    pub fn build(&self, parent: &gtk4::Box) -> gtk4::CheckButton {
+        let widget = gtk4::CheckButton::builder().build();
+        widget.set_active(self.checked);
+        self.defaults.apply(&widget);
+        if let Some(group) = &self.group {
+            let mut child = parent.first_child();
+            while let Some(cur_child) = child {
+                if let Some(cur_child) = cur_child.downcast_ref::<gtk4::CheckButton>() {
+                    if cur_child.widget_name() == *group {
+                        widget.set_group(Some(cur_child));
+                    }
+                }
+                child = cur_child.next_sibling();
+            }
+        }
+        if let Some(child) = &self.child {
+            let child = child.build(parent);
             // POV when gtk4-rs forgot to implement ButtonExt for CheckButton, so you
             // have to implement `CheckButton::set_child(Option<&impl IsA<Widget>)` yourself:
-            button.set_property("child", Some(&widget));
-            break;
+            widget.set_property("child", Some(&child));
         }
+        widget
     }
-    let button = button.into();
-    defaults.apply(&button);
-    Some(button)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum ButtonKind {
     Normal,
     Toggle,
@@ -661,28 +1133,66 @@ enum ButtonKind {
 }
 /* #endregion Buttons */
 /* #region Canvases */
-fn canvas_area(attributes: Attributes, kind: CanvasKind) -> Option<Widget> {
-    let mut defaults = WidgetDefaults::new();
-    let canvas: Widget = match kind {
-        CanvasKind::GLArea => gtk4::GLArea::builder().build().into(),
-        CanvasKind::DrawingArea => gtk4::DrawingArea::builder().build().into(),
-    };
+fn gl_area(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = GLAreaData::new();
     for attr in attributes {
-        defaults.modify(attr);
+        data.defaults.modify(attr);
     }
-    defaults.apply(&canvas);
-    Some(canvas)
+    Some(WidgetData::GLArea(data))
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
+struct GLAreaData {
+    defaults: WidgetDefaults,
+}
+
+impl GLAreaData {
+    pub fn new() -> Self {
+        GLAreaData {
+            defaults: WidgetDefaults::new(),
+        }
+    }
+    pub fn build(&self) -> gtk4::GLArea {
+        let widget = gtk4::GLArea::builder().build();
+        self.defaults.apply(&widget);
+        widget
+    }
+}
+
+fn drawing_area(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = DrawingAreaData::new();
+    for attr in attributes {
+        data.defaults.modify(attr);
+    }
+    Some(WidgetData::DrawingArea(data))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct DrawingAreaData {
+    defaults: WidgetDefaults,
+}
+
+impl DrawingAreaData {
+    pub fn new() -> Self {
+        DrawingAreaData {
+            defaults: WidgetDefaults::new(),
+        }
+    }
+    pub fn build(&self) -> gtk4::DrawingArea {
+        let widget = gtk4::DrawingArea::builder().build();
+        self.defaults.apply(&widget);
+        widget
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 enum CanvasKind {
     GLArea,
     DrawingArea,
 }
 /* #endregion Canvases */
 /* #region Clones */
-fn process_cloned(attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> {
-    let mut child = None;
+fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData> {
     let mut old_name = None;
     let mut new_name = None;
     for attr in attributes {
@@ -702,118 +1212,38 @@ fn process_cloned(attributes: Attributes, parent: &gtk4::Box) -> Option<Widget> 
     if old_name == new_name {
         return None;
     }
-    let mut loop_child = parent.first_child();
     if let Some(old_name) = old_name {
-        while let Some(cur_child) = loop_child.as_ref() {
-            if cur_child.widget_name() == old_name {
-                child = clone(cur_child);
-            }
-            loop_child = cur_child.next_sibling();
-        }
-    }
-    child
-}
-
-fn clone<T: IsA<Widget>>(input: &T) -> Option<T> {
-    let obj: &gtk4::glib::Object = input.as_ref().upcast_ref();
-    if input.is::<gtk4::Button>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::Button>().cloned() {
-            let button = gtk4::Button::builder().build();
-            clone_props(&input, &button);
-            if let Some(child) = input.child() {
-                button.set_child(clone(&child).as_ref());
-            }
-            return button.dynamic_cast::<T>().ok();
-        }
-    } else if input.is::<gtk4::ToggleButton>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::ToggleButton>().cloned() {
-            let button = gtk4::ToggleButton::builder()
-                .active(input.is_active())
-                .build();
-            clone_props(&input, &button);
-            if let Some(child) = input.child() {
-                button.set_child(clone(&child).as_ref());
-            }
-            return button.dynamic_cast::<T>().ok();
-        }
-    } else if input.is::<gtk4::CheckButton>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::CheckButton>().cloned() {
-            let button = gtk4::CheckButton::builder()
-                .active(input.is_active())
-                .build();
-            clone_props(&input, &button);
-            let child = input.property_value("child");
-            if let Ok(Some(child)) = child.get::<Option<gtk4::Widget>>() {
-                button.set_property("child", clone(&child));
-            }
-            return button.dynamic_cast::<T>().ok();
-        }
-    } else if input.is::<gtk4::GLArea>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::GLArea>().cloned() {
-            let area = gtk4::GLArea::builder().build();
-            clone_props(&input, &area);
-            return area.dynamic_cast::<T>().ok();
-        }
-    } else if input.is::<gtk4::DrawingArea>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::DrawingArea>().cloned() {
-            let area = gtk4::DrawingArea::builder().build();
-            clone_props(&input, &area);
-            return area.dynamic_cast::<T>().ok();
-        }
-    } else if input.is::<gtk4::Box>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::Box>().cloned() {
-            let container = gtk4::Box::builder().build();
-            clone_props(&input, &container);
-            let mut child = input.first_child();
-            while let Some(cur_child) = child {
-                if let Some(cur_child) = clone(&cur_child) {
-                    container.append(&cur_child);
+        for cur_child in &parent.children {
+            if cur_child.get_name() == old_name {
+                let mut new_child = cur_child.clone();
+                if let Some(new_name) = new_name {
+                    new_child.set_name(new_name);
                 }
-                child = cur_child.next_sibling();
+                return Some(WidgetData::Clone(CloneData::new(new_child)));
             }
-            return container.dynamic_cast::<T>().ok();
-        }
-    } else if input.is::<gtk4::Grid>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::Grid>().cloned() {
-            let container = gtk4::Grid::builder().build();
-            clone_props(&input, &container);
-            let mut child = input.first_child();
-            while let Some(cur_child) = child {
-                let (c, r, w, h) = input.query_child(&cur_child);
-                if let Some(cur_child) = clone(&cur_child) {
-                    container.attach(&cur_child, c, r, w, h);
-                }
-                child = cur_child.next_sibling();
-            }
-            return container.dynamic_cast::<T>().ok();
-        }
-    } else if input.is::<gtk4::Label>() {
-        if let Some(input) = obj.downcast_ref::<gtk4::Label>().cloned() {
-            let label = gtk4::Label::builder().build();
-            clone_props(&input, &label);
-            return label.dynamic_cast::<T>().ok();
         }
     }
     None
 }
 
-fn clone_props<T: IsA<Widget>>(old: &T, new: &T) {
-    let blacklist = ["parent", "child", "icon-name", "layout-manager", "active"];
-    let guard = new.freeze_notify();
-    for prop in old.list_properties() {
-        if !blacklist.contains(&prop.name())
-            && prop.flags().contains(ParamFlags::READWRITE)
-            && !prop.flags().contains(ParamFlags::CONSTRUCT_ONLY)
-        {
-            let val = old.property(prop.name());
-            new.set_property_from_value(prop.name(), &val);
+#[derive(Debug, PartialEq, Clone)]
+struct CloneData {
+    host: Box<WidgetData>,
+}
+
+impl CloneData {
+    pub fn new(host: WidgetData) -> Self {
+        CloneData {
+            host: Box::new(host),
         }
     }
-    drop(guard);
+    pub fn build(&self, parent: &gtk4::Box) -> gtk4::Widget {
+        self.host.build(parent)
+    }
 }
 
 /* #endregion Clones */
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 struct Margin {
     top: i32,
     bottom: i32,
@@ -831,7 +1261,7 @@ impl Margin {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 struct WidgetDefaults {
     halign: gtk4::Align,
     valign: gtk4::Align,
@@ -911,7 +1341,7 @@ impl WidgetDefaults {
             _ => {}
         }
     }
-    fn apply(&self, widget: &Widget) {
+    fn apply(&self, widget: &impl IsA<Widget>) {
         widget.set_hexpand(self.hexpand);
         widget.set_vexpand(self.vexpand);
         widget.set_halign(self.halign);
@@ -926,7 +1356,7 @@ impl WidgetDefaults {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum ElemKind {
     Label(Text),
     Container(BoxKind),
@@ -934,4 +1364,59 @@ enum ElemKind {
     Canvas(CanvasKind),
     Cloned,
     Fallback,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum WidgetData {
+    Box(BoxData),
+    Grid(GridData),
+    Button(ButtonData),
+    ToggleButton(ToggleButtonData),
+    CheckButton(CheckButtonData),
+    Label(Box<LabelData>),
+    DrawingArea(DrawingAreaData),
+    GLArea(GLAreaData),
+    Clone(CloneData),
+}
+
+impl WidgetData {
+    pub fn build(&self, parent: &gtk4::Box) -> Widget {
+        match self {
+            WidgetData::Box(box_) => box_.build().into(),
+            WidgetData::Grid(grid) => grid.build(parent).into(),
+            WidgetData::Button(button) => button.build(parent).into(),
+            WidgetData::ToggleButton(button) => button.build(parent).into(),
+            WidgetData::CheckButton(button) => button.build(parent).into(),
+            WidgetData::Label(label) => label.build().into(),
+            WidgetData::DrawingArea(drawing) => drawing.build().into(),
+            WidgetData::GLArea(glarea) => glarea.build().into(),
+            WidgetData::Clone(clone) => clone.build(parent),
+        }
+    }
+    pub fn get_name(&self) -> String {
+        match self {
+            WidgetData::Box(box_) => box_.defaults.name.to_string(),
+            WidgetData::Grid(grid) => grid.defaults.name.to_string(),
+            WidgetData::Button(button) => button.defaults.name.to_string(),
+            WidgetData::ToggleButton(button) => button.defaults.name.to_string(),
+            WidgetData::CheckButton(button) => button.defaults.name.to_string(),
+            WidgetData::Label(label) => label.defaults.name.to_string(),
+            WidgetData::DrawingArea(drawing) => drawing.defaults.name.to_string(),
+            WidgetData::GLArea(glarea) => glarea.defaults.name.to_string(),
+            WidgetData::Clone(clone) => clone.host.get_name(),
+        }
+    }
+    pub fn set_name(&mut self, new_name: &str) {
+        match self {
+            WidgetData::Box(box_) => box_.defaults.name = new_name.to_string(),
+            WidgetData::Grid(grid) => grid.defaults.name = new_name.to_string(),
+            WidgetData::Button(button) => button.defaults.name = new_name.to_string(),
+            WidgetData::ToggleButton(button) => button.defaults.name = new_name.to_string(),
+            WidgetData::CheckButton(button) => button.defaults.name = new_name.to_string(),
+            WidgetData::Label(label) => label.defaults.name = new_name.to_string(),
+            WidgetData::DrawingArea(drawing) => drawing.defaults.name = new_name.to_string(),
+            WidgetData::GLArea(glarea) => glarea.defaults.name = new_name.to_string(),
+            WidgetData::Clone(clone) => clone.host.set_name(new_name),
+        }
+    }
 }
