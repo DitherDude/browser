@@ -1219,27 +1219,11 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
                 if let Some(new_name) = new_name {
                     new_child.set_name(new_name);
                 }
-                return Some(WidgetData::Clone(CloneData::new(new_child)));
+                return Some(WidgetData::Clone(Box::new(new_child)));
             }
         }
     }
     None
-}
-
-#[derive(Debug, PartialEq, Clone)]
-struct CloneData {
-    host: Box<WidgetData>,
-}
-
-impl CloneData {
-    pub fn new(host: WidgetData) -> Self {
-        CloneData {
-            host: Box::new(host),
-        }
-    }
-    pub fn build(&self, parent: &gtk4::Box) -> gtk4::Widget {
-        self.host.build(parent)
-    }
 }
 
 /* #endregion Clones */
@@ -1376,7 +1360,7 @@ enum WidgetData {
     Label(Box<LabelData>),
     DrawingArea(DrawingAreaData),
     GLArea(GLAreaData),
-    Clone(CloneData),
+    Clone(Box<WidgetData>),
 }
 
 impl WidgetData {
@@ -1403,7 +1387,7 @@ impl WidgetData {
             WidgetData::Label(label) => label.defaults.name.to_string(),
             WidgetData::DrawingArea(drawing) => drawing.defaults.name.to_string(),
             WidgetData::GLArea(glarea) => glarea.defaults.name.to_string(),
-            WidgetData::Clone(clone) => clone.host.get_name(),
+            WidgetData::Clone(clone) => clone.get_name(),
         }
     }
     pub fn set_name(&mut self, new_name: &str) {
@@ -1416,7 +1400,7 @@ impl WidgetData {
             WidgetData::Label(label) => label.defaults.name = new_name.to_string(),
             WidgetData::DrawingArea(drawing) => drawing.defaults.name = new_name.to_string(),
             WidgetData::GLArea(glarea) => glarea.defaults.name = new_name.to_string(),
-            WidgetData::Clone(clone) => clone.host.set_name(new_name),
+            WidgetData::Clone(clone) => clone.set_name(new_name),
         }
     }
 }
