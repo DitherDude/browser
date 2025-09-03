@@ -103,7 +103,7 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
             .filter(|x| !x.is_empty())
             .map(|text| {
                 let mut data = LabelData::new();
-                data.text = node_escape(text);
+                data.text = text.to_string();
                 WidgetData::Label(Box::new(data))
             }),
     }
@@ -741,7 +741,7 @@ fn raw_text_style(kind: &TestStyle, children: Children) -> Option<String> {
             }
             NodeType::Text => {
                 if let Some(text) = child.text() {
-                    markup.push_str(&node_escape(text));
+                    markup.push_str(text);
                 }
             }
             _ => {}
@@ -760,16 +760,16 @@ fn raw_text_style(kind: &TestStyle, children: Children) -> Option<String> {
 }
 
 fn node_escape(raw: &str) -> String {
-    raw.replace(">", "&gt;")
+    raw.replace("&", "&amp;")
+        .replace(">", "&gt;")
         .replace("<", "&lt;")
-        .replace("&", "&amp;")
 }
 fn _attr_escape(raw: &str) -> String {
-    raw.replace("\"", "&quot;")
+    raw.replace("&", "&amp;")
+        .replace("\"", "&quot;")
         .replace("'", "&apos;")
         .replace(">", "&gt;")
         .replace("<", "&lt;")
-        .replace("&", "&amp;")
 }
 
 #[derive(Debug, PartialEq, Clone)]
