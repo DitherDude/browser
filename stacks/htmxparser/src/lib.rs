@@ -14,6 +14,10 @@ pub fn get_elements(markup: String) -> gtk4::Box {
     }
     let _ = gtk4::init();
     let mut data = BoxData::new();
+    data.defaults.hexpand = true;
+    data.defaults.vexpand = true;
+    data.defaults.halign = gtk4::Align::Fill;
+    data.defaults.valign = gtk4::Align::Fill;
     let tree = match Document::parse(&markup) {
         Ok(tree) => tree,
         Err(e) => {
@@ -62,11 +66,9 @@ fn derive_kind(name: &str) -> ElemKind {
         "grid" => ElemKind::Container(BoxKind::Grid),
         "griditem" | "gi" => ElemKind::Container(BoxKind::GridItem),
         "div" | "box" => ElemKind::Container(BoxKind::Normal),
-        "button" => ElemKind::Button(ButtonKind::Normal),
-        "toggle" | "tbutton" => ElemKind::Button(ButtonKind::Toggle),
-        "checked" | "check" | "cbutton" | "radio" | "rbutton" => {
-            ElemKind::Button(ButtonKind::Checked)
-        }
+        "button" | "btn" => ElemKind::Button(ButtonKind::Normal),
+        "toggle" | "tbtn" => ElemKind::Button(ButtonKind::Toggle),
+        "checked" | "check" | "cbtn" | "radio" | "rbtn" => ElemKind::Button(ButtonKind::Checked),
         "canvas" | "draw" | "drawingarea" => ElemKind::Canvas(CanvasKind::DrawingArea),
         "gl" | "glarea" => ElemKind::Canvas(CanvasKind::GLArea),
         "clone" | "cloned" => ElemKind::Cloned,
@@ -723,8 +725,12 @@ impl LabelData {
             self.compile(),
             node_escape(&self.text)
         );
-        let label = gtk4::Label::builder().use_markup(true).label(markup);
-        label.build()
+        let label = gtk4::Label::builder()
+            .use_markup(true)
+            .label(markup)
+            .build();
+        self.defaults.apply(&label);
+        label
     }
 }
 
@@ -1270,7 +1276,7 @@ impl WidgetDefaults {
             name: String::new(),
         }
     }
-    fn modify(&mut self, attr: roxmltree::Attribute) {
+    pub fn modify(&mut self, attr: roxmltree::Attribute) {
         let val = attr.value();
         match attr.name() {
             "_halign" => match val {
@@ -1290,12 +1296,12 @@ impl WidgetDefaults {
                 _ => {}
             },
             "_hexpand" => match val {
-                "true" | "t" | "yes" | "y" => self.hexpand = true,
-                _ => self.hexpand = false,
+                "false" | "f" | "no" | "n" => self.hexpand = false,
+                _ => self.hexpand = true,
             },
             "_vexpand" => match val {
-                "true" | "t" | "yes" | "y" => self.vexpand = true,
-                _ => self.vexpand = false,
+                "false" | "f" | "no" | "n" => self.vexpand = false,
+                _ => self.vexpand = true,
             },
             "_tooltip" => {
                 let val = val.trim().to_owned();
@@ -1325,7 +1331,7 @@ impl WidgetDefaults {
             _ => {}
         }
     }
-    fn apply(&self, widget: &impl IsA<Widget>) {
+    pub fn apply(&self, widget: &impl IsA<Widget>) {
         widget.set_hexpand(self.hexpand);
         widget.set_vexpand(self.vexpand);
         widget.set_halign(self.halign);
