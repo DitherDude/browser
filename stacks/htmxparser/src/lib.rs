@@ -304,8 +304,8 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                 }
             }
             "overline" => match val {
-                "n" | "none" | "no" | "f" | "false" => data.overline = false,
-                _ => data.overline = true,
+                "n" | "none" | "no" | "f" | "false" => data.overline = Some(false),
+                _ => data.overline = Some(true),
             },
             "olc" | "overline_color" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
@@ -331,8 +331,8 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                 _ => {}
             },
             "s" | "strikethrough" => match val.to_lowercase().as_str() {
-                "n" | "no" | "f" | "false" => data.strikethrough = false,
-                _ => data.strikethrough = true,
+                "n" | "no" | "f" | "false" => data.strikethrough = Some(false),
+                _ => data.strikethrough = Some(true),
             },
             "strikethrough_color" | "scolor" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
@@ -340,8 +340,8 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                 }
             }
             "fallback" => match val.to_lowercase().as_str() {
-                "n" | "f" | "no" | "false" => data.fallback = false,
-                _ => data.fallback = true,
+                "n" | "f" | "no" | "false" => data.fallback = Some(false),
+                _ => data.fallback = Some(true),
             },
             "lang" => data.lang = Some(val.to_string()),
             "letter_spacing" | "spacing" => {
@@ -373,12 +373,12 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                 }
             }
             "insert_hyphens" | "hyphens" => match val.to_lowercase().as_str() {
-                "n" | "f" | "no" | "false" => data.hyphens = false,
-                _ => data.hyphens = true,
+                "n" | "f" | "no" | "false" => data.hyphens = Some(false),
+                _ => data.hyphens = Some(true),
             },
             "allow_breaks" | "breaks" => match val.to_lowercase().as_str() {
-                "n" | "f" | "no" | "false" => data.breaks = false,
-                _ => data.breaks = true,
+                "n" | "f" | "no" | "false" => data.breaks = Some(false),
+                _ => data.breaks = Some(true),
             },
             "line_height" | "height" => {
                 if val
@@ -488,8 +488,8 @@ mod l_attr {
 #[derive(Debug, PartialEq, Clone)]
 struct LabelData {
     text: String,
-    link: Option<String>,
     defaults: WidgetDefaults,
+    link: Option<String>,
     font: Option<String>,
     face: Option<String>,
     size: Option<String>,
@@ -504,21 +504,21 @@ struct LabelData {
     balpha: Option<String>,
     underline: Option<l_attr::UnderLine>,
     ulc: Option<String>,
-    overline: bool,
+    overline: Option<bool>,
     olc: Option<String>,
     rise: Option<String>,
     fall: Option<String>,
     scale: Option<l_attr::Scale>,
-    strikethrough: bool,
+    strikethrough: Option<bool>,
     scolor: Option<String>,
-    fallback: bool,
+    fallback: Option<bool>,
     lang: Option<String>,
     spacing: Option<f64>,
     gravity: Option<l_attr::Gravity>,
     hint: Option<l_attr::GravityHint>,
     show: Option<String>,
-    hyphens: bool,
-    breaks: bool,
+    hyphens: Option<bool>,
+    breaks: Option<bool>,
     height: Option<String>,
     transform: Option<l_attr::Transform>,
     segment: Option<l_attr::Segment>,
@@ -528,8 +528,8 @@ impl LabelData {
     pub fn new() -> Self {
         LabelData {
             text: String::new(),
-            link: None,
             defaults: WidgetDefaults::new(),
+            link: None,
             font: None,
             face: None,
             size: None,
@@ -544,21 +544,21 @@ impl LabelData {
             balpha: None,
             underline: None,
             ulc: None,
-            overline: false,
+            overline: None,
             olc: None,
             rise: None,
             fall: None,
             scale: None,
-            strikethrough: false,
+            strikethrough: None,
             scolor: None,
-            fallback: false,
+            fallback: None,
             lang: None,
             spacing: None,
             gravity: None,
             hint: None,
             show: None,
-            hyphens: false,
-            breaks: true,
+            hyphens: None,
+            breaks: None,
             height: None,
             transform: None,
             segment: None,
@@ -659,8 +659,12 @@ impl LabelData {
         if let Some(color) = &self.ulc {
             a.push_str(&format!("underline_color='{color}' "));
         }
-        if self.overline {
-            a.push_str("overline='single' ");
+        if let Some(overline) = &self.overline {
+            if *overline {
+                a.push_str("overline='single' ");
+            } else {
+                a.push_str("overline='none' ");
+            }
         }
         if let Some(color) = &self.olc {
             a.push_str(&format!("overline_color='{color}' "));
@@ -681,14 +685,22 @@ impl LabelData {
                 }
             ));
         }
-        if self.strikethrough {
-            a.push_str("strikethrough='true' ");
+        if let Some(st) = &self.strikethrough {
+            if *st {
+                a.push_str("strikethrough='true' ");
+            } else {
+                a.push_str("strikethrough='false' ");
+            }
         }
         if let Some(color) = &self.scolor {
             a.push_str(&format!("strikethrough_color='{color}' "));
         }
-        if !self.fallback {
-            a.push_str("fallback='false' ");
+        if let Some(fb) = &self.fallback {
+            if *fb {
+                a.push_str("fallback='true' ");
+            } else {
+                a.push_str("fallback='false' ");
+            }
         }
         if let Some(lang) = &self.lang {
             a.push_str(&format!("lang='{lang}' "));
@@ -721,11 +733,19 @@ impl LabelData {
         if let Some(show) = &self.show {
             a.push_str(&format!("show='{show}' "));
         }
-        if self.hyphens {
-            a.push_str("insert_hyphens='true' ");
+        if let Some(hyphens) = &self.hyphens {
+            if *hyphens {
+                a.push_str("insert_hyphens='true' ");
+            } else {
+                a.push_str("insert_hyphens='false' ");
+            }
         }
-        if self.breaks {
-            a.push_str("allow_breaks='true' ");
+        if let Some(breaks) = &self.breaks {
+            if *breaks {
+                a.push_str("allow_breaks='true' ");
+            } else {
+                a.push_str("allow_breaks='false' ");
+            }
         }
         if let Some(height) = &self.height {
             a.push_str(&format!("line_height='{height}' "));
@@ -754,23 +774,22 @@ impl LabelData {
         if let Some(link) = &self.link {
             text = format!("<a href='{link}'>{text}</a>");
         }
-        format!("<span {}>{}</span>", a.trim(), text)
+        format!("<span {}>{}{}</span>", a.trim(), text, {
+            let mut nested = String::new();
+            for child in &self.children {
+                nested.push_str(&child.compile());
+            }
+            nested
+        })
     }
     pub fn build(&self) -> Widget {
-        let markup = self.collect();
+        let markup = self.compile();
         let label = gtk4::Label::builder()
             .use_markup(true)
             .label(markup)
             .build();
         self.defaults.apply(&label);
         label.into()
-    }
-    pub fn collect(&self) -> String {
-        let mut markup = self.compile();
-        for child in &self.children {
-            markup.push_str(&child.collect());
-        }
-        markup
     }
 }
 
