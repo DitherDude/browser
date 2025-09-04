@@ -122,32 +122,46 @@ fn process_text(kind: &Text, children: Children, attributes: Attributes) -> Opti
     let mut data = LabelData::new();
     match kind {
         Text::Kind(kind) => {
-            data = text_kind(kind, children, attributes)?;
+            data = text_kind(kind, children, attributes, None)?;
         }
         Text::Style(style) => data.text = raw_text_style(style, children)?,
     }
     Some(data)
 }
 
-fn text_kind(kind: &TextKind, children: Children, attributes: Attributes) -> Option<LabelData> {
-    let mut data = text_attributes(attributes);
+fn text_kind(
+    kind: &TextKind,
+    children: Children,
+    attributes: Attributes,
+    dad: Option<&LabelData>,
+) -> Option<LabelData> {
+    let mut data = text_attributes(attributes, dad);
     for child in children {
         match child.node_type() {
             NodeType::Element => {
                 if let ElemKind::Label(text) = derive_kind(child.tag_name().name()) {
                     match text {
                         Text::Kind(kind) => {
-                            if let Some(cur_data) = process_text(
-                                &Text::Kind(kind),
-                                child.children(),
-                                child.attributes(),
-                            ) {
-                                data = cur_data;
+                            if let Some(cur_data) =
+                                text_kind(&kind, child.children(), child.attributes(), Some(&data))
+                            {
+                                if data.text.is_empty() {
+                                    data = cur_data;
+                                } else {
+                                    data.children.push(cur_data);
+                                }
                             }
                         }
                         Text::Style(style) => {
                             if let Some(text) = raw_text_style(&style, child.children()) {
-                                data.text = text;
+                                if data.text.is_empty() {
+                                    data.text = text;
+                                } else {
+                                    let mut raw_data = data.clone();
+                                    raw_data.children = Vec::new();
+                                    raw_data.text = text;
+                                    data.children.push(raw_data);
+                                }
                             }
                         }
                     }
@@ -155,7 +169,14 @@ fn text_kind(kind: &TextKind, children: Children, attributes: Attributes) -> Opt
             }
             NodeType::Text => {
                 if let Some(text) = child.text() {
-                    data.text = text.to_string();
+                    if data.text.is_empty() {
+                        data.text = text.to_string();
+                    } else {
+                        let mut raw_data = data.clone();
+                        raw_data.children = Vec::new();
+                        raw_data.text = text.to_string();
+                        data.children.push(raw_data);
+                    }
                 }
             }
             _ => {}
@@ -173,8 +194,15 @@ fn text_kind(kind: &TextKind, children: Children, attributes: Attributes) -> Opt
     Some(data)
 }
 
-fn text_attributes(attributes: Attributes) -> LabelData {
-    let mut data = LabelData::new();
+fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData {
+    let mut data = if let Some(dad) = dad {
+        let mut data = dad.clone();
+        data.text = String::new();
+        data.children = Vec::new();
+        data
+    } else {
+        LabelData::new()
+    };
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -492,6 +520,7 @@ struct LabelData {
     height: Option<String>,
     transform: Option<l_attr::Transform>,
     segment: Option<l_attr::Segment>,
+    children: Vec<LabelData>,
 }
 impl LabelData {
     pub fn new() -> Self {
@@ -530,6 +559,7 @@ impl LabelData {
             height: None,
             transform: None,
             segment: None,
+            children: Vec::new(),
         }
     }
     pub fn compile(&self) -> String {
@@ -719,18 +749,25 @@ impl LabelData {
         }
         a
     }
-    pub fn build(&self) -> gtk4::Label {
-        let markup = format!(
-            "<span {}>{}</span>",
-            self.compile(),
-            node_escape(&self.text)
-        );
+    pub fn build(&self) -> Widget {
+        let markup = self.collect();
         let label = gtk4::Label::builder()
             .use_markup(true)
             .label(markup)
             .build();
         self.defaults.apply(&label);
-        label
+        label.into()
+    }
+    pub fn collect(&self) -> String {
+        let mut markup = format!(
+            "<span {}>{}</span>",
+            self.compile(),
+            node_escape(&self.text)
+        );
+        for child in &self.children {
+            markup.push_str(&child.collect());
+        }
+        markup
     }
 }
 
@@ -1233,6 +1270,9 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
 }
 
 /* #endregion Clones */
+/* #region Loaders */
+/* #endregion Loaders */
+
 #[derive(Debug, PartialEq, Clone)]
 struct Margin {
     top: i32,
@@ -1377,7 +1417,7 @@ impl WidgetData {
             WidgetData::Button(button) => button.build(parent).into(),
             WidgetData::ToggleButton(button) => button.build(parent).into(),
             WidgetData::CheckButton(button) => button.build(parent).into(),
-            WidgetData::Label(label) => label.build().into(),
+            WidgetData::Label(label) => label.build(),
             WidgetData::DrawingArea(drawing) => drawing.build().into(),
             WidgetData::GLArea(glarea) => glarea.build().into(),
             WidgetData::Clone(clone) => clone.build(parent),
