@@ -55,14 +55,14 @@ fn derive_kind(name: &str) -> ElemKind {
         "h4" => ElemKind::Label(Text::Kind(TextKind::Header4)),
         "h5" => ElemKind::Label(Text::Kind(TextKind::Header5)),
         "h6" => ElemKind::Label(Text::Kind(TextKind::Header6)),
-        "p" | "_" => ElemKind::Label(Text::Kind(TextKind::Normal)),
-        "i" => ElemKind::Label(Text::Style(TestStyle::Italic)),
-        "b" => ElemKind::Label(Text::Style(TestStyle::Bold)),
-        "u" => ElemKind::Label(Text::Style(TestStyle::Underline)),
-        "s" => ElemKind::Label(Text::Style(TestStyle::Strikethrough)),
-        "sup" => ElemKind::Label(Text::Style(TestStyle::Superscript)),
-        "sub" => ElemKind::Label(Text::Style(TestStyle::Subscript)),
-        "code" => ElemKind::Label(Text::Style(TestStyle::Code)),
+        "p" | "_" | "a" => ElemKind::Label(Text::Kind(TextKind::Normal)),
+        "i" => ElemKind::Label(Text::Style(TextStyle::Italic)),
+        "b" => ElemKind::Label(Text::Style(TextStyle::Bold)),
+        "u" => ElemKind::Label(Text::Style(TextStyle::Underline)),
+        "s" => ElemKind::Label(Text::Style(TextStyle::Strikethrough)),
+        "sup" => ElemKind::Label(Text::Style(TextStyle::Superscript)),
+        "sub" => ElemKind::Label(Text::Style(TextStyle::Subscript)),
+        "code" => ElemKind::Label(Text::Style(TextStyle::Code)),
         "grid" => ElemKind::Container(BoxKind::Grid),
         "griditem" | "gi" => ElemKind::Container(BoxKind::GridItem),
         "div" | "box" => ElemKind::Container(BoxKind::Normal),
@@ -206,6 +206,7 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
+            "href" | "link" => data.link = Some(val.to_string()),
             "font" => data.font = Some(val.to_string()),
             "ff" | "font_family" | "face" => data.face = Some(val.to_string()),
             "size" => {
@@ -486,8 +487,9 @@ mod l_attr {
 }
 #[derive(Debug, PartialEq, Clone)]
 struct LabelData {
-    defaults: WidgetDefaults,
     text: String,
+    link: Option<String>,
+    defaults: WidgetDefaults,
     font: Option<String>,
     face: Option<String>,
     size: Option<String>,
@@ -525,8 +527,9 @@ struct LabelData {
 impl LabelData {
     pub fn new() -> Self {
         LabelData {
-            defaults: WidgetDefaults::new(),
             text: String::new(),
+            link: None,
+            defaults: WidgetDefaults::new(),
             font: None,
             face: None,
             size: None,
@@ -747,7 +750,11 @@ impl LabelData {
                 }
             ));
         }
-        a
+        let mut text = node_escape(&self.text);
+        if let Some(link) = &self.link {
+            text = format!("<a href='{link}'>{text}</a>");
+        }
+        format!("<span {}>{}</span>", a.trim(), text)
     }
     pub fn build(&self) -> Widget {
         let markup = self.collect();
@@ -759,11 +766,7 @@ impl LabelData {
         label.into()
     }
     pub fn collect(&self) -> String {
-        let mut markup = format!(
-            "<span {}>{}</span>",
-            self.compile(),
-            node_escape(&self.text)
-        );
+        let mut markup = self.compile();
         for child in &self.children {
             markup.push_str(&child.collect());
         }
@@ -771,7 +774,7 @@ impl LabelData {
     }
 }
 
-fn raw_text_style(kind: &TestStyle, children: Children) -> Option<String> {
+fn raw_text_style(kind: &TextStyle, children: Children) -> Option<String> {
     let mut markup = String::new();
     for child in children {
         match child.node_type() {
@@ -791,13 +794,13 @@ fn raw_text_style(kind: &TestStyle, children: Children) -> Option<String> {
         }
     }
     match kind {
-        TestStyle::Bold => markup = format!("<b>{markup}</b>"),
-        TestStyle::Italic => markup = format!("<i>{markup}</i>"),
-        TestStyle::Underline => markup = format!("<u>{markup}</u>"),
-        TestStyle::Strikethrough => markup = format!("<s>{markup}</s>"),
-        TestStyle::Superscript => markup = format!("<sup>{markup}</sup>"),
-        TestStyle::Subscript => markup = format!("<sub>{markup}</sub>"),
-        TestStyle::Code => markup = format!("<tt>{markup}</tt>"),
+        TextStyle::Bold => markup = format!("<b>{markup}</b>"),
+        TextStyle::Italic => markup = format!("<i>{markup}</i>"),
+        TextStyle::Underline => markup = format!("<u>{markup}</u>"),
+        TextStyle::Strikethrough => markup = format!("<s>{markup}</s>"),
+        TextStyle::Superscript => markup = format!("<sup>{markup}</sup>"),
+        TextStyle::Subscript => markup = format!("<sub>{markup}</sub>"),
+        TextStyle::Code => markup = format!("<tt>{markup}</tt>"),
     }
     Some(markup)
 }
@@ -818,7 +821,7 @@ fn _attr_escape(raw: &str) -> String {
 #[derive(Debug, PartialEq, Clone)]
 enum Text {
     Kind(TextKind),
-    Style(TestStyle),
+    Style(TextStyle),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -830,10 +833,11 @@ enum TextKind {
     Header5,
     Header6,
     Normal,
+    // Link,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-enum TestStyle {
+enum TextStyle {
     Bold,
     Italic,
     Underline,
