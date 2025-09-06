@@ -63,9 +63,9 @@ fn derive_kind(name: &str) -> ElemKind {
         "sup" => ElemKind::Label(Text::Style(TextStyle::Superscript)),
         "sub" => ElemKind::Label(Text::Style(TextStyle::Subscript)),
         "code" => ElemKind::Label(Text::Style(TextStyle::Code)),
-        "grid" => ElemKind::Container(BoxKind::Grid),
-        "griditem" | "gi" => ElemKind::Container(BoxKind::GridItem),
-        "div" | "box" => ElemKind::Container(BoxKind::Normal),
+        "grid" => ElemKind::Container(ContainerKind::Grid),
+        "griditem" | "gi" => ElemKind::Container(ContainerKind::GridItem),
+        "div" | "box" => ElemKind::Container(ContainerKind::Normal),
         "button" | "btn" => ElemKind::Button(ButtonKind::Normal),
         "toggle" | "tbtn" => ElemKind::Button(ButtonKind::Toggle),
         "checked" | "check" | "cbtn" | "radio" | "rbtn" => ElemKind::Button(ButtonKind::Checked),
@@ -83,11 +83,13 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
     let kind = derive_kind(elem.tag_name().name());
     match kind {
         ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes()),
-        ElemKind::Container(BoxKind::Grid) => {
+        ElemKind::Container(ContainerKind::Grid) => {
             process_grid(elem.children(), elem.attributes(), parent)
         }
-        ElemKind::Container(BoxKind::GridItem) => None,
-        ElemKind::Container(BoxKind::Normal) => process_box(elem.children(), elem.attributes()),
+        ElemKind::Container(ContainerKind::GridItem) => None,
+        ElemKind::Container(ContainerKind::Normal) => {
+            process_box(elem.children(), elem.attributes())
+        }
         ElemKind::Button(kind) => match kind {
             ButtonKind::Normal => normal_button(elem.children(), elem.attributes(), parent),
             ButtonKind::Toggle => toggle_button(elem.children(), elem.attributes(), parent),
@@ -889,7 +891,7 @@ fn process_box(children: Children, attributes: Attributes) -> Option<WidgetData>
             data.children.push(child);
         }
     }
-    Some(WidgetData::Box(data))
+    Some(WidgetData::Container(ContainerData::Box(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -937,7 +939,7 @@ fn process_grid(
         }
     }
     for child in children {
-        if derive_kind(child.tag_name().name()) != ElemKind::Container(BoxKind::GridItem) {
+        if derive_kind(child.tag_name().name()) != ElemKind::Container(ContainerKind::GridItem) {
             println!("Expected GridItem, found: {child:?}");
             continue;
         }
@@ -977,11 +979,11 @@ fn process_grid(
             }
         }
     }
-    Some(WidgetData::Grid(data))
+    Some(WidgetData::Container(ContainerData::Grid(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
-enum BoxKind {
+enum ContainerKind {
     Grid,
     GridItem,
     Normal,
@@ -1018,6 +1020,33 @@ impl GridData {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+enum ContainerData {
+    Box(BoxData),
+    Grid(GridData),
+}
+
+impl ContainerData {
+    pub fn build(&self, parent: &gtk4::Box) -> Widget {
+        match &self {
+            ContainerData::Box(container) => container.build().into(),
+            ContainerData::Grid(grid) => grid.build(parent).into(),
+        }
+    }
+    pub fn get_name(&self) -> String {
+        match &self {
+            ContainerData::Box(container) => container.defaults.name.to_string(),
+            ContainerData::Grid(grid) => grid.defaults.name.to_string(),
+        }
+    }
+    pub fn set_name(&mut self, new_name: &str) {
+        match self {
+            ContainerData::Box(container) => container.defaults.name = new_name.to_string(),
+            ContainerData::Grid(grid) => grid.defaults.name = new_name.to_string(),
+        }
+    }
+}
+
 /* #endregion Containers */
 /* #region Buttons */
 fn normal_button(
@@ -1025,7 +1054,7 @@ fn normal_button(
     attributes: Attributes,
     parent: &BoxData,
 ) -> Option<WidgetData> {
-    let mut data = ButtonData::new();
+    let mut data = NormalButtonData::new();
     for attr in attributes {
         data.defaults.modify(attr);
     }
@@ -1035,18 +1064,18 @@ fn normal_button(
             break;
         }
     }
-    Some(WidgetData::Button(data))
+    Some(WidgetData::Button(ButtonData::Normal(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct ButtonData {
+struct NormalButtonData {
     defaults: WidgetDefaults,
     child: Option<Box<WidgetData>>,
 }
 
-impl ButtonData {
+impl NormalButtonData {
     pub fn new() -> Self {
-        ButtonData {
+        NormalButtonData {
             defaults: WidgetDefaults::new(),
             child: None,
         }
@@ -1086,7 +1115,7 @@ fn toggle_button(
             break;
         }
     }
-    Some(WidgetData::ToggleButton(data))
+    Some(WidgetData::Button(ButtonData::Toggle(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1152,7 +1181,7 @@ fn check_button(
             break;
         }
     }
-    Some(WidgetData::CheckButton(data))
+    Some(WidgetData::Button(ButtonData::Checked(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1203,6 +1232,37 @@ enum ButtonKind {
     Toggle,
     Checked,
 }
+
+#[derive(Debug, PartialEq, Clone)]
+enum ButtonData {
+    Normal(NormalButtonData),
+    Toggle(ToggleButtonData),
+    Checked(CheckButtonData),
+}
+
+impl ButtonData {
+    pub fn build(&self, parent: &gtk4::Box) -> Widget {
+        match &self {
+            ButtonData::Normal(button) => button.build(parent).into(),
+            ButtonData::Toggle(button) => button.build(parent).into(),
+            ButtonData::Checked(button) => button.build(parent).into(),
+        }
+    }
+    pub fn get_name(&self) -> String {
+        match &self {
+            ButtonData::Normal(button) => button.defaults.name.to_string(),
+            ButtonData::Toggle(button) => button.defaults.name.to_string(),
+            ButtonData::Checked(button) => button.defaults.name.to_string(),
+        }
+    }
+    pub fn set_name(&mut self, new_name: &str) {
+        match self {
+            ButtonData::Normal(button) => button.defaults.name = new_name.to_string(),
+            ButtonData::Toggle(button) => button.defaults.name = new_name.to_string(),
+            ButtonData::Checked(button) => button.defaults.name = new_name.to_string(),
+        }
+    }
+}
 /* #endregion Buttons */
 /* #region Canvases */
 fn gl_area(attributes: Attributes) -> Option<WidgetData> {
@@ -1210,7 +1270,7 @@ fn gl_area(attributes: Attributes) -> Option<WidgetData> {
     for attr in attributes {
         data.defaults.modify(attr);
     }
-    Some(WidgetData::GLArea(data))
+    Some(WidgetData::Canvas(CanvasData::GLArea(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1236,7 +1296,7 @@ fn drawing_area(attributes: Attributes) -> Option<WidgetData> {
     for attr in attributes {
         data.defaults.modify(attr);
     }
-    Some(WidgetData::DrawingArea(data))
+    Some(WidgetData::Canvas(CanvasData::DrawingArea(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1261,6 +1321,33 @@ impl DrawingAreaData {
 enum CanvasKind {
     GLArea,
     DrawingArea,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum CanvasData {
+    GLArea(GLAreaData),
+    DrawingArea(DrawingAreaData),
+}
+
+impl CanvasData {
+    pub fn build(&self) -> Widget {
+        match &self {
+            CanvasData::DrawingArea(canvas) => canvas.build().into(),
+            CanvasData::GLArea(canvas) => canvas.build().into(),
+        }
+    }
+    pub fn get_name(&self) -> String {
+        match &self {
+            CanvasData::DrawingArea(canvas) => canvas.defaults.name.to_string(),
+            CanvasData::GLArea(canvas) => canvas.defaults.name.to_string(),
+        }
+    }
+    pub fn set_name(&mut self, new_name: &str) {
+        match self {
+            CanvasData::DrawingArea(canvas) => canvas.defaults.name = new_name.to_string(),
+            CanvasData::GLArea(canvas) => canvas.defaults.name = new_name.to_string(),
+        }
+    }
 }
 /* #endregion Canvases */
 /* #region Clones */
@@ -1324,7 +1411,7 @@ fn spinner(attributes: Attributes) -> Option<WidgetData> {
             _ => data.defaults.modify(attr),
         }
     }
-    Some(WidgetData::Spinner(data))
+    Some(WidgetData::Loader(LoaderData::Spinner(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1384,7 +1471,7 @@ fn level_bar(attributes: Attributes) -> Option<WidgetData> {
             _ => data.defaults.modify(attr),
         }
     }
-    Some(WidgetData::LevelBar(data))
+    Some(WidgetData::Loader(LoaderData::LevelBar(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1420,13 +1507,6 @@ impl LevelBarData {
             .inverted(self.inverted)
             .build()
     }
-}
-
-#[derive(Debug, PartialEq, Clone)]
-enum LoaderKind {
-    Spinner,
-    LevelBar,
-    ProgressBar,
 }
 
 fn progress_bar(
@@ -1476,7 +1556,7 @@ fn progress_bar(
             data.text.push_str(&label.text);
         }
     }
-    Some(WidgetData::ProgressBar(data))
+    Some(WidgetData::Loader(LoaderData::ProgressBar(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1509,6 +1589,43 @@ impl ProgressBarData {
             .ellipsize(self.ellipsize)
             .show_text(!self.text.is_empty())
             .build()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum LoaderKind {
+    Spinner,
+    LevelBar,
+    ProgressBar,
+}
+#[derive(Debug, PartialEq, Clone)]
+enum LoaderData {
+    Spinner(SpinnerData),
+    LevelBar(LevelBarData),
+    ProgressBar(ProgressBarData),
+}
+
+impl LoaderData {
+    pub fn build(&self) -> Widget {
+        match &self {
+            LoaderData::Spinner(spinner) => spinner.build().into(),
+            LoaderData::LevelBar(bar) => bar.build().into(),
+            LoaderData::ProgressBar(bar) => bar.build().into(),
+        }
+    }
+    pub fn get_name(&self) -> String {
+        match &self {
+            LoaderData::Spinner(spinner) => spinner.defaults.name.to_string(),
+            LoaderData::LevelBar(bar) => bar.defaults.name.to_string(),
+            LoaderData::ProgressBar(bar) => bar.defaults.name.to_string(),
+        }
+    }
+    pub fn set_name(&mut self, new_name: &str) {
+        match self {
+            LoaderData::Spinner(spinner) => spinner.defaults.name = new_name.to_string(),
+            LoaderData::LevelBar(bar) => bar.defaults.name = new_name.to_string(),
+            LoaderData::ProgressBar(bar) => bar.defaults.name = new_name.to_string(),
+        }
     }
 }
 /* #endregion Loaders */
@@ -1648,7 +1765,7 @@ impl WidgetDefaults {
 #[derive(Debug, PartialEq, Clone)]
 enum ElemKind {
     Label(Text),
-    Container(BoxKind),
+    Container(ContainerKind),
     Button(ButtonKind),
     Loader(LoaderKind),
     Canvas(CanvasKind),
@@ -1658,67 +1775,43 @@ enum ElemKind {
 
 #[derive(Debug, PartialEq, Clone)]
 enum WidgetData {
-    Box(BoxData),
-    Grid(GridData),
+    Container(ContainerData),
     Button(ButtonData),
-    ToggleButton(ToggleButtonData),
-    CheckButton(CheckButtonData),
     Label(Box<LabelData>),
-    DrawingArea(DrawingAreaData),
-    GLArea(GLAreaData),
+    Canvas(CanvasData),
+    Loader(LoaderData),
     Clone(Box<WidgetData>),
-    Spinner(SpinnerData),
-    LevelBar(LevelBarData),
-    ProgressBar(ProgressBarData),
 }
 
 impl WidgetData {
     pub fn build(&self, parent: &gtk4::Box) -> Widget {
-        match self {
-            WidgetData::Box(box_) => box_.build().into(),
-            WidgetData::Grid(grid) => grid.build(parent).into(),
-            WidgetData::Button(button) => button.build(parent).into(),
-            WidgetData::ToggleButton(button) => button.build(parent).into(),
-            WidgetData::CheckButton(button) => button.build(parent).into(),
+        match &self {
+            WidgetData::Container(container) => container.build(parent),
+            WidgetData::Button(button) => button.build(parent),
             WidgetData::Label(label) => label.build(),
-            WidgetData::DrawingArea(drawing) => drawing.build().into(),
-            WidgetData::GLArea(glarea) => glarea.build().into(),
+            WidgetData::Canvas(canvas) => canvas.build(),
             WidgetData::Clone(clone) => clone.build(parent),
-            WidgetData::Spinner(spinner) => spinner.build().into(),
-            WidgetData::LevelBar(bar) => bar.build().into(),
-            WidgetData::ProgressBar(bar) => bar.build().into(),
+            WidgetData::Loader(loader) => loader.build(),
         }
     }
     pub fn get_name(&self) -> String {
-        match self {
-            WidgetData::Box(box_) => box_.defaults.name.to_string(),
-            WidgetData::Grid(grid) => grid.defaults.name.to_string(),
-            WidgetData::Button(button) => button.defaults.name.to_string(),
-            WidgetData::ToggleButton(button) => button.defaults.name.to_string(),
-            WidgetData::CheckButton(button) => button.defaults.name.to_string(),
+        match &self {
+            WidgetData::Container(container) => container.get_name(),
+            WidgetData::Button(button) => button.get_name(),
             WidgetData::Label(label) => label.defaults.name.to_string(),
-            WidgetData::DrawingArea(drawing) => drawing.defaults.name.to_string(),
-            WidgetData::GLArea(glarea) => glarea.defaults.name.to_string(),
+            WidgetData::Canvas(canvas) => canvas.get_name(),
             WidgetData::Clone(clone) => clone.get_name(),
-            WidgetData::Spinner(spinner) => spinner.defaults.name.to_string(),
-            WidgetData::LevelBar(bar) => bar.defaults.name.to_string(),
-            WidgetData::ProgressBar(bar) => bar.defaults.name.to_string(),
+            WidgetData::Loader(loader) => loader.get_name(),
         }
     }
     pub fn set_name(&mut self, new_name: &str) {
         match self {
-            WidgetData::Box(box_) => box_.defaults.name = new_name.to_string(),
-            WidgetData::Grid(grid) => grid.defaults.name = new_name.to_string(),
-            WidgetData::Button(button) => button.defaults.name = new_name.to_string(),
-            WidgetData::ToggleButton(button) => button.defaults.name = new_name.to_string(),
-            WidgetData::CheckButton(button) => button.defaults.name = new_name.to_string(),
+            WidgetData::Container(container) => container.set_name(new_name),
+            WidgetData::Button(button) => button.set_name(new_name),
             WidgetData::Label(label) => label.defaults.name = new_name.to_string(),
-            WidgetData::DrawingArea(drawing) => drawing.defaults.name = new_name.to_string(),
-            WidgetData::GLArea(glarea) => glarea.defaults.name = new_name.to_string(),
+            WidgetData::Canvas(canvas) => canvas.set_name(new_name),
             WidgetData::Clone(clone) => clone.set_name(new_name),
-            WidgetData::Spinner(spinner) => spinner.defaults.name = new_name.to_string(),
-            WidgetData::LevelBar(bar) => bar.defaults.name = new_name.to_string(),
-            WidgetData::ProgressBar(bar) => bar.defaults.name = new_name.to_string(),
+            WidgetData::Loader(loader) => loader.set_name(new_name),
         }
     }
 }
