@@ -72,6 +72,9 @@ fn derive_kind(name: &str) -> ElemKind {
         "canvas" | "draw" | "drawingarea" => ElemKind::Canvas(CanvasKind::DrawingArea),
         "gl" | "glarea" => ElemKind::Canvas(CanvasKind::GLArea),
         "clone" | "cloned" => ElemKind::Cloned,
+        "spinner" | "spin" => ElemKind::Loader(LoaderKind::Spinner),
+        "levelbar" | "lb" => ElemKind::Loader(LoaderKind::LevelBar),
+        "progressbar" | "pb" => ElemKind::Loader(LoaderKind::ProgressBar),
         _ => ElemKind::Fallback,
     }
 }
@@ -108,6 +111,9 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
                 data.text = text.to_string();
                 WidgetData::Label(Box::new(data))
             }),
+        ElemKind::Loader(loader) => {
+            process_loader(&loader, elem.attributes(), elem.children(), parent)
+        }
     }
 }
 
@@ -1294,6 +1300,217 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
 
 /* #endregion Clones */
 /* #region Loaders */
+fn process_loader(
+    kind: &LoaderKind,
+    attributes: Attributes,
+    children: Children,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    match kind {
+        LoaderKind::Spinner => spinner(attributes),
+        LoaderKind::LevelBar => level_bar(attributes),
+        LoaderKind::ProgressBar => progress_bar(attributes, children, parent),
+    }
+}
+
+fn spinner(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = SpinnerData::new();
+    for attr in attributes {
+        match attr.name() {
+            "spin" | "spinning" => match attr.value() {
+                "f" | "false" | "n" | "no" => data.spinning = false,
+                _ => data.spinning = true,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    Some(WidgetData::Spinner(data))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct SpinnerData {
+    defaults: WidgetDefaults,
+    spinning: bool,
+}
+
+impl SpinnerData {
+    pub fn new() -> Self {
+        SpinnerData {
+            defaults: WidgetDefaults::new(),
+            spinning: true,
+        }
+    }
+    pub fn build(&self) -> gtk4::Spinner {
+        gtk4::Spinner::builder().spinning(self.spinning).build()
+    }
+}
+
+fn level_bar(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = LevelBarData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "progress" | "value" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.progress = val;
+                }
+            }
+            "min" | "minimum" | "floor" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.min = val;
+                }
+            }
+            "max" | "maximum" | "ceiling" | "ceil" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.max = val;
+                }
+            }
+            "mode" | "type" => match val {
+                "discrete" | "step" | "stepped" => data.mode = gtk4::LevelBarMode::Discrete,
+                _ => data.mode = gtk4::LevelBarMode::Continuous,
+            },
+            "discrete" => match val {
+                "false" | "f" | "no" | "n" => data.mode = gtk4::LevelBarMode::Continuous,
+                _ => data.mode = gtk4::LevelBarMode::Discrete,
+            },
+            "overflow" | "leak" | "of" => match val {
+                "false" | "f" | "no" | "n" => data.of = gtk4::Overflow::Hidden,
+                _ => data.of = gtk4::Overflow::Visible,
+            },
+            "invert" | "inverted" | "rev" | "reversed" => match val {
+                "false" | "f" | "no" | "n" => data.inverted = false,
+                _ => data.inverted = true,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    Some(WidgetData::LevelBar(data))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct LevelBarData {
+    defaults: WidgetDefaults,
+    progress: f64,
+    min: f64,
+    max: f64,
+    mode: gtk4::LevelBarMode,
+    of: gtk4::Overflow,
+    inverted: bool,
+}
+
+impl LevelBarData {
+    pub fn new() -> Self {
+        LevelBarData {
+            defaults: WidgetDefaults::new(),
+            progress: 0f64,
+            min: 0f64,
+            max: 100f64,
+            mode: gtk4::LevelBarMode::Continuous,
+            of: gtk4::Overflow::Visible,
+            inverted: false,
+        }
+    }
+    pub fn build(&self) -> gtk4::LevelBar {
+        gtk4::LevelBar::builder()
+            .value(self.progress)
+            .min_value(self.min)
+            .max_value(self.max)
+            .mode(self.mode)
+            .overflow(self.of)
+            .inverted(self.inverted)
+            .build()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum LoaderKind {
+    Spinner,
+    LevelBar,
+    ProgressBar,
+}
+
+fn progress_bar(
+    attributes: Attributes,
+    children: Children,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    let mut data = ProgressBarData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "progress" | "value" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    if (0f64..=1f64).contains(&val) {
+                        data.progress = val;
+                    }
+                }
+            }
+            "ellipse" | "ellipsize" => match val {
+                "start" | "left" | "front" | "beginning" => {
+                    data.ellipsize = gtk4::pango::EllipsizeMode::Start;
+                }
+                "end" | "right" | "back" => {
+                    data.ellipsize = gtk4::pango::EllipsizeMode::End;
+                }
+                "middle" | "center" | "centre" => {
+                    data.ellipsize = gtk4::pango::EllipsizeMode::Middle;
+                }
+                _ => data.ellipsize = gtk4::pango::EllipsizeMode::None,
+            },
+            "pulse" | "bounce" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    if (0f64..=1f64).contains(&val) {
+                        data.pulse = val;
+                    }
+                }
+            }
+            "invert" | "inverted" | "rev" | "reversed" => match val {
+                "false" | "f" | "no" | "n" => data.inverted = false,
+                _ => data.inverted = true,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    for child in children {
+        if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
+            data.text.push_str(&label.text);
+        }
+    }
+    Some(WidgetData::ProgressBar(data))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct ProgressBarData {
+    defaults: WidgetDefaults,
+    ellipsize: gtk4::pango::EllipsizeMode,
+    progress: f64,
+    inverted: bool,
+    pulse: f64,
+    text: String,
+}
+
+impl ProgressBarData {
+    pub fn new() -> Self {
+        ProgressBarData {
+            defaults: WidgetDefaults::new(),
+            ellipsize: gtk4::pango::EllipsizeMode::None,
+            progress: 0f64,
+            inverted: false,
+            pulse: 0f64,
+            text: String::new(),
+        }
+    }
+    pub fn build(&self) -> gtk4::ProgressBar {
+        gtk4::ProgressBar::builder()
+            .fraction(self.progress)
+            .inverted(self.inverted)
+            .pulse_step(self.pulse)
+            .text(&self.text)
+            .ellipsize(self.ellipsize)
+            .show_text(!self.text.is_empty())
+            .build()
+    }
+}
 /* #endregion Loaders */
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1324,6 +1541,8 @@ struct WidgetDefaults {
     opacity: f64,
     margin: Margin,
     name: String,
+    size_req: Option<(i32, i32)>,
+    orientation: gtk4::Orientation,
 }
 
 impl WidgetDefaults {
@@ -1337,6 +1556,8 @@ impl WidgetDefaults {
             opacity: 1f64,
             margin: Margin::new(),
             name: String::new(),
+            size_req: None,
+            orientation: gtk4::Orientation::Horizontal,
         }
     }
     pub fn modify(&mut self, attr: roxmltree::Attribute) {
@@ -1344,18 +1565,18 @@ impl WidgetDefaults {
         match attr.name() {
             "_halign" => match val {
                 "fill" => self.halign = gtk4::Align::Fill,
-                "start" | "left" => self.halign = gtk4::Align::Start,
-                "end" | "right" => self.halign = gtk4::Align::End,
-                "center" | "middle" => self.halign = gtk4::Align::Center,
-                "baseline" => self.halign = gtk4::Align::Baseline,
+                "start" | "left" | "front" | "beginning" => self.halign = gtk4::Align::Start,
+                "end" | "right" | "back" => self.halign = gtk4::Align::End,
+                "center" | "middle" | "centre" => self.halign = gtk4::Align::Center,
+                "baseline" | "base" => self.halign = gtk4::Align::Baseline,
                 _ => {}
             },
             "_valign" => match val {
                 "fill" => self.valign = gtk4::Align::Fill,
-                "start" | "left" => self.valign = gtk4::Align::Start,
-                "end" | "right" => self.valign = gtk4::Align::End,
-                "center" | "middle" => self.valign = gtk4::Align::Center,
-                "baseline" => self.valign = gtk4::Align::Baseline,
+                "start" | "left" | "front" | "beginning" => self.valign = gtk4::Align::Start,
+                "end" | "right" | "back" => self.valign = gtk4::Align::End,
+                "center" | "middle" | "centre" => self.valign = gtk4::Align::Center,
+                "baseline" | "base" => self.valign = gtk4::Align::Baseline,
                 _ => {}
             },
             "_hexpand" => match val {
@@ -1391,6 +1612,18 @@ impl WidgetDefaults {
                 }
             }
             "_name" => self.name = val.trim().to_string(),
+            "_size" | "_size_req" => {
+                if let Some((Ok(width), Ok(height))) = val
+                    .split_once(',')
+                    .map(|x| (x.0.parse::<i32>(), x.1.parse::<i32>()))
+                {
+                    self.size_req = Some((width, height));
+                }
+            }
+            "_orientation" => match val {
+                "v" | "vert" | "vertical" => self.orientation = gtk4::Orientation::Vertical,
+                _ => self.orientation = gtk4::Orientation::Horizontal,
+            },
             _ => {}
         }
     }
@@ -1406,6 +1639,9 @@ impl WidgetDefaults {
         widget.set_margin_start(self.margin.start);
         widget.set_margin_end(self.margin.end);
         widget.set_widget_name(&self.name);
+        if let Some((width, height)) = &self.size_req {
+            widget.set_size_request(*width, *height);
+        }
     }
 }
 
@@ -1414,6 +1650,7 @@ enum ElemKind {
     Label(Text),
     Container(BoxKind),
     Button(ButtonKind),
+    Loader(LoaderKind),
     Canvas(CanvasKind),
     Cloned,
     Fallback,
@@ -1430,6 +1667,9 @@ enum WidgetData {
     DrawingArea(DrawingAreaData),
     GLArea(GLAreaData),
     Clone(Box<WidgetData>),
+    Spinner(SpinnerData),
+    LevelBar(LevelBarData),
+    ProgressBar(ProgressBarData),
 }
 
 impl WidgetData {
@@ -1444,6 +1684,9 @@ impl WidgetData {
             WidgetData::DrawingArea(drawing) => drawing.build().into(),
             WidgetData::GLArea(glarea) => glarea.build().into(),
             WidgetData::Clone(clone) => clone.build(parent),
+            WidgetData::Spinner(spinner) => spinner.build().into(),
+            WidgetData::LevelBar(bar) => bar.build().into(),
+            WidgetData::ProgressBar(bar) => bar.build().into(),
         }
     }
     pub fn get_name(&self) -> String {
@@ -1457,6 +1700,9 @@ impl WidgetData {
             WidgetData::DrawingArea(drawing) => drawing.defaults.name.to_string(),
             WidgetData::GLArea(glarea) => glarea.defaults.name.to_string(),
             WidgetData::Clone(clone) => clone.get_name(),
+            WidgetData::Spinner(spinner) => spinner.defaults.name.to_string(),
+            WidgetData::LevelBar(bar) => bar.defaults.name.to_string(),
+            WidgetData::ProgressBar(bar) => bar.defaults.name.to_string(),
         }
     }
     pub fn set_name(&mut self, new_name: &str) {
@@ -1470,6 +1716,9 @@ impl WidgetData {
             WidgetData::DrawingArea(drawing) => drawing.defaults.name = new_name.to_string(),
             WidgetData::GLArea(glarea) => glarea.defaults.name = new_name.to_string(),
             WidgetData::Clone(clone) => clone.set_name(new_name),
+            WidgetData::Spinner(spinner) => spinner.defaults.name = new_name.to_string(),
+            WidgetData::LevelBar(bar) => bar.defaults.name = new_name.to_string(),
+            WidgetData::ProgressBar(bar) => bar.defaults.name = new_name.to_string(),
         }
     }
 }
