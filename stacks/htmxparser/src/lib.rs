@@ -76,6 +76,11 @@ fn derive_kind(name: &str) -> ElemKind {
         "levelbar" | "lb" => ElemKind::Loader(LoaderKind::LevelBar),
         "progressbar" | "pb" => ElemKind::Loader(LoaderKind::ProgressBar),
         "textview" | "multiline" => ElemKind::Input(InputKind::TextView),
+        "entry" | "input" => ElemKind::Input(InputKind::Entry),
+        "search" | "searchentry" => ElemKind::Input(InputKind::Search),
+        "password" | "pass" => ElemKind::Input(InputKind::Password),
+        "number" | "valuepicker" => ElemKind::Input(InputKind::Spin),
+        "editable" => ElemKind::Input(InputKind::Editable),
         _ => ElemKind::Fallback,
     }
 }
@@ -100,6 +105,11 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
         },
         ElemKind::Input(input) => match input {
             InputKind::TextView => process_textview(elem.children(), elem.attributes(), parent),
+            InputKind::Entry => process_entry(elem.attributes()),
+            InputKind::Search => search_entry(elem.attributes()),
+            InputKind::Password => password_entry(elem.attributes()),
+            InputKind::Spin => spin_button(elem.attributes()),
+            InputKind::Editable => editable_label(elem.children(), elem.attributes(), parent),
         },
         ElemKind::Cloned => {
             if !elem.has_children() {
@@ -1680,30 +1690,356 @@ impl TextViewData {
     }
 }
 
+fn process_entry(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = EntryData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "text" => data.text = val.to_string(),
+            "hint" | "placeholder" => data.hint = val.to_string(),
+            "max" | "length" | "len" => {
+                if let Ok(val) = val.parse::<i32>() {
+                    data.max = val;
+                }
+            }
+            _ => data.defaults.modify(attr),
+        }
+    }
+    Some(WidgetData::Input(InputData::Entry(data)))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct EntryData {
+    defaults: WidgetDefaults,
+    text: String,
+    hint: String,
+    max: i32,
+}
+
+impl EntryData {
+    pub fn new() -> Self {
+        EntryData {
+            defaults: WidgetDefaults::new(),
+            text: String::new(),
+            hint: String::new(),
+            max: 0,
+        }
+    }
+    pub fn build(&self) -> gtk4::Entry {
+        let entry = gtk4::Entry::builder()
+            .text(&self.text)
+            .placeholder_text(&self.hint)
+            .max_length(self.max)
+            .build();
+        self.defaults.apply(&entry);
+        entry
+    }
+}
+
+fn search_entry(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = SearchEntryData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "text" => data.text = val.to_string(),
+            "hint" | "placeholder" => data.hint = val.to_string(),
+            "activatable" | "trigger" => match val {
+                "true" | "t" | "yes" | "y" => data.activate = true,
+                _ => data.activate = false,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    Some(WidgetData::Input(InputData::SearchEntry(data)))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct SearchEntryData {
+    defaults: WidgetDefaults,
+    text: String,
+    hint: String,
+    activate: bool,
+}
+
+impl SearchEntryData {
+    pub fn new() -> Self {
+        SearchEntryData {
+            defaults: WidgetDefaults::new(),
+            text: String::new(),
+            hint: String::new(),
+            activate: true,
+        }
+    }
+    pub fn build(&self) -> gtk4::SearchEntry {
+        let entry = gtk4::SearchEntry::builder()
+            .text(&self.text)
+            .placeholder_text(&self.hint)
+            .activates_default(self.activate)
+            .build();
+        self.defaults.apply(&entry);
+        entry
+    }
+}
+
+fn password_entry(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = PasswordEntryData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "text" => data.text = val.to_string(),
+            "hint" | "placeholder" => data.hint = val.to_string(),
+            "icon" | "peek" => match val {
+                "true" | "t" | "yes" | "y" => data.icon = true,
+                _ => data.icon = false,
+            },
+            "activatable" | "trigger" => match val {
+                "true" | "t" | "yes" | "y" => data.activate = true,
+                _ => data.activate = false,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    Some(WidgetData::Input(InputData::PasswordEntry(data)))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct PasswordEntryData {
+    defaults: WidgetDefaults,
+    text: String,
+    hint: String,
+    icon: bool,
+    activate: bool,
+}
+
+impl PasswordEntryData {
+    pub fn new() -> Self {
+        PasswordEntryData {
+            defaults: WidgetDefaults::new(),
+            text: String::new(),
+            hint: String::new(),
+            icon: true,
+            activate: true,
+        }
+    }
+    pub fn build(&self) -> gtk4::PasswordEntry {
+        let entry = gtk4::PasswordEntry::builder()
+            .text(&self.text)
+            .placeholder_text(&self.hint)
+            .show_peek_icon(self.icon)
+            .activates_default(self.activate)
+            .build();
+        self.defaults.apply(&entry);
+        entry
+    }
+}
+
+fn spin_button(attributes: Attributes) -> Option<WidgetData> {
+    let mut data = SpinButtonData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "value" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.value = val;
+                }
+            }
+            "range" => {
+                if let Some((Ok(min), Ok(max))) = val
+                    .split_once(',')
+                    .map(|(x, y)| (x.parse::<f64>(), y.parse::<f64>()))
+                {
+                    data.range = (min, max);
+                }
+            }
+            "min" | "minimum" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.range.0 = val;
+                }
+            }
+            "max" | "maximum" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.range.1 = val;
+                }
+            }
+            "inc" | "increment" => {
+                if let Some((Ok(min), Ok(max))) = val
+                    .split_once(',')
+                    .map(|(x, y)| (x.parse::<f64>(), y.parse::<f64>()))
+                {
+                    data.increments = (min, max);
+                }
+            }
+            "step" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.increments.0 = val;
+                }
+            }
+            "page" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.increments.1 = val;
+                }
+            }
+            "numeric" | "number" => match val {
+                "true" | "t" | "yes" | "y" => data.numeric = true,
+                _ => data.numeric = false,
+            },
+            "wrap" | "loop" => match val {
+                "false" | "f" | "no" | "n" => data.wrap = false,
+                _ => data.wrap = true,
+            },
+            "rate" | "acceleration" => {
+                if let Ok(val) = val.parse::<f64>() {
+                    data.rate = val;
+                }
+            }
+            "snap" | "lock" => match val {
+                "false" | "f" | "no" | "n" => data.snap = false,
+                _ => data.snap = true,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    Some(WidgetData::Input(InputData::Spin(data)))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct SpinButtonData {
+    defaults: WidgetDefaults,
+    value: f64,
+    range: (f64, f64),
+    increments: (f64, f64),
+    numeric: bool,
+    wrap: bool,
+    rate: f64,
+    snap: bool,
+}
+
+impl SpinButtonData {
+    pub fn new() -> Self {
+        SpinButtonData {
+            defaults: WidgetDefaults::new(),
+            value: 0f64,
+            range: (0f64, 100f64),
+            increments: (1f64, 5f64),
+            numeric: true,
+            wrap: false,
+            rate: 0f64,
+            snap: false,
+        }
+    }
+    pub fn build(&self) -> gtk4::SpinButton {
+        let spin = gtk4::SpinButton::builder()
+            .value(self.value)
+            .numeric(self.numeric)
+            .wrap(self.wrap)
+            .climb_rate(self.rate)
+            .snap_to_ticks(self.snap)
+            .build();
+        spin.set_range(self.range.0, self.range.1);
+        spin.set_increments(self.increments.0, self.increments.1);
+        self.defaults.apply(&spin);
+        spin
+    }
+}
+
+fn editable_label(
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    let mut data = EditableLabelData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "editable" | "edit" => match val {
+                "true" | "t" | "yes" | "y" => data.editable = true,
+                _ => data.editable = false,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    for child in children {
+        if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
+            data.text.push_str(&label.text);
+        }
+    }
+    Some(WidgetData::Input(InputData::Editable(data)))
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct EditableLabelData {
+    defaults: WidgetDefaults,
+    text: String,
+    editable: bool,
+}
+
+impl EditableLabelData {
+    pub fn new() -> Self {
+        EditableLabelData {
+            defaults: WidgetDefaults::new(),
+            text: String::new(),
+            editable: true,
+        }
+    }
+    pub fn build(&self) -> gtk4::EditableLabel {
+        let label = gtk4::EditableLabel::builder()
+            .text(&self.text)
+            .editable(self.editable)
+            .build();
+        self.defaults.apply(&label);
+        label
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 enum InputKind {
     TextView,
+    Entry,
+    Search,
+    Password,
+    Spin,
+    Editable,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 enum InputData {
     TextView(TextViewData),
+    Entry(EntryData),
+    SearchEntry(SearchEntryData),
+    PasswordEntry(PasswordEntryData),
+    Spin(SpinButtonData),
+    Editable(EditableLabelData),
 }
 
 impl InputData {
     pub fn build(&self) -> Widget {
         match &self {
             InputData::TextView(input) => input.build().into(),
+            InputData::Entry(entry) => entry.build().into(),
+            InputData::SearchEntry(entry) => entry.build().into(),
+            InputData::PasswordEntry(entry) => entry.build().into(),
+            InputData::Spin(spin) => spin.build().into(),
+            InputData::Editable(label) => label.build().into(),
         }
     }
     pub fn get_name(&self) -> String {
         match &self {
             InputData::TextView(input) => input.defaults.name.to_string(),
+            InputData::Entry(entry) => entry.defaults.name.to_string(),
+            InputData::SearchEntry(entry) => entry.defaults.name.to_string(),
+            InputData::PasswordEntry(entry) => entry.defaults.name.to_string(),
+            InputData::Spin(spin) => spin.defaults.name.to_string(),
+            InputData::Editable(label) => label.defaults.name.to_string(),
         }
     }
     pub fn set_name(&mut self, new_name: &str) {
         match self {
             InputData::TextView(input) => input.defaults.name = new_name.to_string(),
+            InputData::Entry(entry) => entry.defaults.name = new_name.to_string(),
+            InputData::SearchEntry(entry) => entry.defaults.name = new_name.to_string(),
+            InputData::PasswordEntry(entry) => entry.defaults.name = new_name.to_string(),
+            InputData::Spin(spin) => spin.defaults.name = new_name.to_string(),
+            InputData::Editable(label) => label.defaults.name = new_name.to_string(),
         }
     }
 }
