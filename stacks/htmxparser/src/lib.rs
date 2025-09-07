@@ -1,6 +1,6 @@
 use gtk4::{Widget, prelude::*};
 use roxmltree::{Attributes, Children, Document, Node, NodeType};
-
+/* #region Init */
 #[unsafe(no_mangle)]
 pub fn stacks() -> String {
     "HTMLX".to_owned()
@@ -75,6 +75,7 @@ fn derive_kind(name: &str) -> ElemKind {
         "spinner" | "spin" => ElemKind::Loader(LoaderKind::Spinner),
         "levelbar" | "lb" => ElemKind::Loader(LoaderKind::LevelBar),
         "progressbar" | "pb" => ElemKind::Loader(LoaderKind::ProgressBar),
+        "textview" | "multiline" => ElemKind::Input(InputKind::TextView),
         _ => ElemKind::Fallback,
     }
 }
@@ -83,20 +84,23 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
     let kind = derive_kind(elem.tag_name().name());
     match kind {
         ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes()),
-        ElemKind::Container(ContainerKind::Grid) => {
-            process_grid(elem.children(), elem.attributes(), parent)
-        }
-        ElemKind::Container(ContainerKind::GridItem) => None,
-        ElemKind::Container(ContainerKind::Normal) => {
-            process_box(elem.children(), elem.attributes())
-        }
+        ElemKind::Container(kind) => match kind {
+            ContainerKind::Normal => process_box(elem.children(), elem.attributes()),
+            ContainerKind::Grid => process_grid(elem.children(), elem.attributes(), parent),
+            ContainerKind::GridItem => None,
+        },
         ElemKind::Button(kind) => match kind {
             ButtonKind::Normal => normal_button(elem.children(), elem.attributes(), parent),
             ButtonKind::Toggle => toggle_button(elem.children(), elem.attributes(), parent),
             ButtonKind::Checked => check_button(elem.children(), elem.attributes(), parent),
         },
-        ElemKind::Canvas(CanvasKind::DrawingArea) => drawing_area(elem.attributes()),
-        ElemKind::Canvas(CanvasKind::GLArea) => gl_area(elem.attributes()),
+        ElemKind::Canvas(canvas) => match canvas {
+            CanvasKind::DrawingArea => drawing_area(elem.attributes()),
+            CanvasKind::GLArea => gl_area(elem.attributes()),
+        },
+        ElemKind::Input(input) => match input {
+            InputKind::TextView => process_textview(elem.children(), elem.attributes(), parent),
+        },
         ElemKind::Cloned => {
             if !elem.has_children() {
                 process_cloned(elem.attributes(), parent)
@@ -113,12 +117,14 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
                 data.text = text.to_string();
                 WidgetData::Label(Box::new(data))
             }),
-        ElemKind::Loader(loader) => {
-            process_loader(&loader, elem.attributes(), elem.children(), parent)
-        }
+        ElemKind::Loader(loader) => match loader {
+            LoaderKind::Spinner => spinner(elem.attributes()),
+            LoaderKind::LevelBar => level_bar(elem.attributes()),
+            LoaderKind::ProgressBar => progress_bar(elem.children(), elem.attributes(), parent),
+        },
     }
 }
-
+/* #endregion Init */
 /* #region Labels */
 fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<WidgetData> {
     Some(WidgetData::Label(Box::new(process_text(
@@ -1350,56 +1356,7 @@ impl CanvasData {
     }
 }
 /* #endregion Canvases */
-/* #region Clones */
-fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData> {
-    let mut old_name = None;
-    let mut new_name = None;
-    for attr in attributes {
-        let val = attr.value().trim();
-        if !val.is_empty() {
-            match attr.name() {
-                "object" | "from" | "import" | "src" | "source" => {
-                    old_name = Some(val);
-                }
-                "subject" | "to" | "as" | "dest" | "destination" => {
-                    new_name = Some(val);
-                }
-                _ => {}
-            }
-        }
-    }
-    if old_name == new_name {
-        return None;
-    }
-    if let Some(old_name) = old_name {
-        for cur_child in &parent.children {
-            if cur_child.get_name() == old_name {
-                let mut new_child = cur_child.clone();
-                if let Some(new_name) = new_name {
-                    new_child.set_name(new_name);
-                }
-                return Some(WidgetData::Clone(Box::new(new_child)));
-            }
-        }
-    }
-    None
-}
-
-/* #endregion Clones */
 /* #region Loaders */
-fn process_loader(
-    kind: &LoaderKind,
-    attributes: Attributes,
-    children: Children,
-    parent: &BoxData,
-) -> Option<WidgetData> {
-    match kind {
-        LoaderKind::Spinner => spinner(attributes),
-        LoaderKind::LevelBar => level_bar(attributes),
-        LoaderKind::ProgressBar => progress_bar(attributes, children, parent),
-    }
-}
-
 fn spinner(attributes: Attributes) -> Option<WidgetData> {
     let mut data = SpinnerData::new();
     for attr in attributes {
@@ -1428,7 +1385,9 @@ impl SpinnerData {
         }
     }
     pub fn build(&self) -> gtk4::Spinner {
-        gtk4::Spinner::builder().spinning(self.spinning).build()
+        let spinner = gtk4::Spinner::builder().spinning(self.spinning).build();
+        self.defaults.apply(&spinner);
+        spinner
     }
 }
 
@@ -1460,10 +1419,6 @@ fn level_bar(attributes: Attributes) -> Option<WidgetData> {
                 "false" | "f" | "no" | "n" => data.mode = gtk4::LevelBarMode::Continuous,
                 _ => data.mode = gtk4::LevelBarMode::Discrete,
             },
-            "overflow" | "leak" | "of" => match val {
-                "false" | "f" | "no" | "n" => data.of = gtk4::Overflow::Hidden,
-                _ => data.of = gtk4::Overflow::Visible,
-            },
             "invert" | "inverted" | "rev" | "reversed" => match val {
                 "false" | "f" | "no" | "n" => data.inverted = false,
                 _ => data.inverted = true,
@@ -1481,7 +1436,6 @@ struct LevelBarData {
     min: f64,
     max: f64,
     mode: gtk4::LevelBarMode,
-    of: gtk4::Overflow,
     inverted: bool,
 }
 
@@ -1493,25 +1447,25 @@ impl LevelBarData {
             min: 0f64,
             max: 100f64,
             mode: gtk4::LevelBarMode::Continuous,
-            of: gtk4::Overflow::Visible,
             inverted: false,
         }
     }
     pub fn build(&self) -> gtk4::LevelBar {
-        gtk4::LevelBar::builder()
+        let levelbar = gtk4::LevelBar::builder()
             .value(self.progress)
             .min_value(self.min)
             .max_value(self.max)
             .mode(self.mode)
-            .overflow(self.of)
             .inverted(self.inverted)
-            .build()
+            .build();
+        self.defaults.apply(&levelbar);
+        levelbar
     }
 }
 
 fn progress_bar(
-    attributes: Attributes,
     children: Children,
+    attributes: Attributes,
     parent: &BoxData,
 ) -> Option<WidgetData> {
     let mut data = ProgressBarData::new();
@@ -1581,14 +1535,16 @@ impl ProgressBarData {
         }
     }
     pub fn build(&self) -> gtk4::ProgressBar {
-        gtk4::ProgressBar::builder()
+        let progressbar = gtk4::ProgressBar::builder()
             .fraction(self.progress)
             .inverted(self.inverted)
             .pulse_step(self.pulse)
             .text(&self.text)
             .ellipsize(self.ellipsize)
             .show_text(!self.text.is_empty())
-            .build()
+            .build();
+        self.defaults.apply(&progressbar);
+        progressbar
     }
 }
 
@@ -1629,7 +1585,166 @@ impl LoaderData {
     }
 }
 /* #endregion Loaders */
+/* #region Inputs */
+fn process_textview(
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<WidgetData> {
+    let mut data = TextViewData::new();
+    for attr in attributes {
+        let val = attr.value();
+        match attr.name() {
+            "readonly" | "ro" | "locked" => match val {
+                "false" | "f" | "no" | "n" => data.editable = true,
+                _ => data.editable = false,
+            },
+            "wrap" | "wrapmode" => match val {
+                "c" | "char" => data.wrap_mode = gtk4::WrapMode::Char,
+                "w" | "word" => data.wrap_mode = gtk4::WrapMode::Word,
+                "wc" | "wordchar" | "both" => data.wrap_mode = gtk4::WrapMode::WordChar,
+                _ => data.wrap_mode = gtk4::WrapMode::None,
+            },
+            "justification" | "align" => match val {
+                "l" | "start" | "left" | "front" | "beginning" => {
+                    data.align = gtk4::Justification::Left
+                }
+                "r" | "end" | "right" | "back" => data.align = gtk4::Justification::Right,
+                "e" | "center" | "middle" | "centre" => data.align = gtk4::Justification::Center,
+                "j" | "justify" | "fill" => data.align = gtk4::Justification::Fill,
+                _ => {}
+            },
+            "indent" => {
+                if let Ok(val) = val.parse::<i32>() {
+                    data.indent = val;
+                }
+            }
+            "cursor" | "caret" => match val {
+                "true" | "t" | "yes" | "y" => data.cursor = true,
+                _ => data.cursor = false,
+            },
+            "monospace" | "mono" => match val {
+                "false" | "f" | "no" | "n" => data.monospace = false,
+                _ => data.monospace = true,
+            },
+            _ => data.defaults.modify(attr),
+        }
+    }
+    for child in children {
+        if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
+            data.buffer.push_str(&label.text);
+        }
+    }
+    Some(WidgetData::Input(InputData::TextView(data)))
+}
 
+#[derive(Debug, PartialEq, Clone)]
+struct TextViewData {
+    defaults: WidgetDefaults,
+    buffer: String,
+    editable: bool,
+    wrap_mode: gtk4::WrapMode,
+    align: gtk4::Justification,
+    indent: i32,
+    cursor: bool,
+    monospace: bool,
+}
+
+impl TextViewData {
+    pub fn new() -> Self {
+        TextViewData {
+            defaults: WidgetDefaults::new(),
+            buffer: String::new(),
+            editable: true,
+            wrap_mode: gtk4::WrapMode::None,
+            align: gtk4::Justification::Left,
+            indent: 0,
+            cursor: true,
+            monospace: false,
+        }
+    }
+    pub fn build(&self) -> gtk4::TextView {
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text(&self.buffer);
+        let textview = gtk4::TextView::builder()
+            .buffer(&buffer)
+            .editable(self.editable)
+            .wrap_mode(self.wrap_mode)
+            .justification(self.align)
+            .indent(self.indent)
+            .cursor_visible(self.cursor)
+            .monospace(self.monospace)
+            .build();
+        self.defaults.apply(&textview);
+        textview
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum InputKind {
+    TextView,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum InputData {
+    TextView(TextViewData),
+}
+
+impl InputData {
+    pub fn build(&self) -> Widget {
+        match &self {
+            InputData::TextView(input) => input.build().into(),
+        }
+    }
+    pub fn get_name(&self) -> String {
+        match &self {
+            InputData::TextView(input) => input.defaults.name.to_string(),
+        }
+    }
+    pub fn set_name(&mut self, new_name: &str) {
+        match self {
+            InputData::TextView(input) => input.defaults.name = new_name.to_string(),
+        }
+    }
+}
+/* #endregion Inputs */
+/* #region Clones */
+fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData> {
+    let mut old_name = None;
+    let mut new_name = None;
+    for attr in attributes {
+        let val = attr.value().trim();
+        if !val.is_empty() {
+            match attr.name() {
+                "object" | "from" | "import" | "src" | "source" => {
+                    old_name = Some(val);
+                }
+                "subject" | "to" | "as" | "dest" | "destination" => {
+                    new_name = Some(val);
+                }
+                _ => {}
+            }
+        }
+    }
+    if old_name == new_name {
+        return None;
+    }
+    if let Some(old_name) = old_name {
+        for cur_child in &parent.children {
+            if cur_child.get_name() == old_name {
+                let mut new_child = cur_child.clone();
+                if let Some(new_name) = new_name {
+                    new_child.set_name(new_name);
+                }
+                return Some(WidgetData::Clone(Box::new(new_child)));
+            }
+        }
+    }
+    None
+}
+
+/* #endregion Clones */
+/* #region Globals */
 #[derive(Debug, PartialEq, Clone)]
 struct Margin {
     top: i32,
@@ -1648,6 +1763,7 @@ impl Margin {
         }
     }
 }
+
 #[derive(Debug, PartialEq, Clone)]
 struct WidgetDefaults {
     halign: gtk4::Align,
@@ -1660,6 +1776,7 @@ struct WidgetDefaults {
     name: String,
     size_req: Option<(i32, i32)>,
     orientation: gtk4::Orientation,
+    overflow: gtk4::Overflow,
 }
 
 impl WidgetDefaults {
@@ -1675,6 +1792,7 @@ impl WidgetDefaults {
             name: String::new(),
             size_req: None,
             orientation: gtk4::Orientation::Horizontal,
+            overflow: gtk4::Overflow::Visible,
         }
     }
     pub fn modify(&mut self, attr: roxmltree::Attribute) {
@@ -1741,6 +1859,10 @@ impl WidgetDefaults {
                 "v" | "vert" | "vertical" => self.orientation = gtk4::Orientation::Vertical,
                 _ => self.orientation = gtk4::Orientation::Horizontal,
             },
+            "_overflow" | "_leak" | "_of" => match val {
+                "false" | "f" | "no" | "n" => self.overflow = gtk4::Overflow::Hidden,
+                _ => self.overflow = gtk4::Overflow::Visible,
+            },
             _ => {}
         }
     }
@@ -1767,51 +1889,57 @@ enum ElemKind {
     Label(Text),
     Container(ContainerKind),
     Button(ButtonKind),
-    Loader(LoaderKind),
     Canvas(CanvasKind),
+    Loader(LoaderKind),
+    Input(InputKind),
     Cloned,
     Fallback,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 enum WidgetData {
+    Label(Box<LabelData>),
     Container(ContainerData),
     Button(ButtonData),
-    Label(Box<LabelData>),
     Canvas(CanvasData),
     Loader(LoaderData),
+    Input(InputData),
     Clone(Box<WidgetData>),
 }
 
 impl WidgetData {
     pub fn build(&self, parent: &gtk4::Box) -> Widget {
         match &self {
+            WidgetData::Label(label) => label.build(),
             WidgetData::Container(container) => container.build(parent),
             WidgetData::Button(button) => button.build(parent),
-            WidgetData::Label(label) => label.build(),
             WidgetData::Canvas(canvas) => canvas.build(),
-            WidgetData::Clone(clone) => clone.build(parent),
             WidgetData::Loader(loader) => loader.build(),
+            WidgetData::Input(input) => input.build(),
+            WidgetData::Clone(clone) => clone.build(parent),
         }
     }
     pub fn get_name(&self) -> String {
         match &self {
+            WidgetData::Label(label) => label.defaults.name.to_string(),
             WidgetData::Container(container) => container.get_name(),
             WidgetData::Button(button) => button.get_name(),
-            WidgetData::Label(label) => label.defaults.name.to_string(),
             WidgetData::Canvas(canvas) => canvas.get_name(),
-            WidgetData::Clone(clone) => clone.get_name(),
             WidgetData::Loader(loader) => loader.get_name(),
+            WidgetData::Input(input) => input.get_name(),
+            WidgetData::Clone(clone) => clone.get_name(),
         }
     }
     pub fn set_name(&mut self, new_name: &str) {
         match self {
+            WidgetData::Label(label) => label.defaults.name = new_name.to_string(),
             WidgetData::Container(container) => container.set_name(new_name),
             WidgetData::Button(button) => button.set_name(new_name),
-            WidgetData::Label(label) => label.defaults.name = new_name.to_string(),
             WidgetData::Canvas(canvas) => canvas.set_name(new_name),
-            WidgetData::Clone(clone) => clone.set_name(new_name),
             WidgetData::Loader(loader) => loader.set_name(new_name),
+            WidgetData::Input(input) => input.set_name(new_name),
+            WidgetData::Clone(clone) => clone.set_name(new_name),
         }
     }
 }
+/* #endregion Globals */
