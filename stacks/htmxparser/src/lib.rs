@@ -91,7 +91,7 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
         ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes()),
         ElemKind::Container(kind) => match kind {
             ContainerKind::Normal => process_box(elem.children(), elem.attributes()),
-            ContainerKind::Grid => process_grid(elem.children(), elem.attributes(), parent),
+            ContainerKind::Grid => process_grid(elem.children(), elem.attributes()),
             ContainerKind::GridItem => None,
         },
         ElemKind::Button(kind) => match kind {
@@ -894,13 +894,7 @@ enum TextStyle {
 fn process_box(children: Children, attributes: Attributes) -> Option<WidgetData> {
     let mut data = BoxData::new();
     for attr in attributes {
-        match attr.name() {
-            "orientation" | "align" => match attr.value() {
-                "horizontal" | "h" => data.orientation = gtk4::Orientation::Horizontal,
-                _ => data.orientation = gtk4::Orientation::Vertical,
-            },
-            _ => data.defaults.modify(attr),
-        }
+        data.modify(attr);
     }
     for child in children {
         if let Some(child) = process_element(&child, &data) {
@@ -925,6 +919,16 @@ impl BoxData {
             children: Vec::new(),
         }
     }
+    pub fn modify(&mut self, attr: roxmltree::Attribute) {
+        let val = attr.value();
+        match attr.name() {
+            "orientation" | "align" => match val {
+                "horizontal" | "h" => self.orientation = gtk4::Orientation::Horizontal,
+                _ => self.orientation = gtk4::Orientation::Vertical,
+            },
+            _ => self.defaults.modify(attr),
+        }
+    }
     pub fn build(&self) -> gtk4::Box {
         let widget = gtk4::Box::builder().orientation(self.orientation).build();
         self.defaults.apply(&widget);
@@ -935,11 +939,7 @@ impl BoxData {
     }
 }
 
-fn process_grid(
-    children: Children,
-    attributes: Attributes,
-    parent: &BoxData,
-) -> Option<WidgetData> {
+fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData> {
     let mut data = GridData::new();
     for attr in attributes {
         match attr.name() {
@@ -956,10 +956,13 @@ fn process_grid(
     }
     for child in children {
         if derive_kind(child.tag_name().name()) != ElemKind::Container(ContainerKind::GridItem) {
-            println!("Expected GridItem, found: {child:?}");
+            if !(child.is_text() && child.text().is_some_and(|x| x.trim().is_empty())) {
+                println!("Expected GridItem, found: {child:?}");
+            }
             continue;
         }
-        let mut loc = (0i32, 0i32, 0i32, 0i32);
+        let mut parent = BoxData::new();
+        let mut loc = (0i32, 0i32, 1i32, 1i32);
         for attr in child.attributes() {
             let val = attr.value();
             match attr.name() {
@@ -974,26 +977,33 @@ fn process_grid(
                     }
                 }
                 "w" | "width" => {
-                    if let Ok(val) = val.parse::<i32>() {
+                    if let Ok(Some(val)) = val
+                        .parse::<i32>()
+                        .map(|x| if x > 0 { Some(x) } else { None })
+                    {
                         loc.2 = val;
                     }
                 }
                 "h" | "height" => {
-                    if let Ok(val) = val.parse::<i32>() {
+                    if let Ok(Some(val)) = val
+                        .parse::<i32>()
+                        .map(|x| if x > 0 { Some(x) } else { None })
+                    {
                         loc.3 = val;
                     }
                 }
-                _ => {}
+                _ => parent.modify(attr),
             };
         }
         for child in child.children() {
             if child.is_text() && child.text().is_some_and(|x| x.trim().is_empty()) {
                 continue;
-            } else if let Some(widget) = process_element(&child, parent) {
-                data.children.push((widget, loc));
-                break;
+            } else if let Some(widget) = process_element(&child, &parent) {
+                parent.children.push(widget);
+                // break;
             }
         }
+        data.children.push((parent, loc));
     }
     Some(WidgetData::Container(ContainerData::Grid(data)))
 }
@@ -1010,7 +1020,7 @@ struct GridData {
     defaults: WidgetDefaults,
     col_hom: bool,
     row_hom: bool,
-    children: Vec<(WidgetData, (i32, i32, i32, i32))>,
+    children: Vec<(BoxData, (i32, i32, i32, i32))>,
 }
 
 impl GridData {
@@ -1022,7 +1032,7 @@ impl GridData {
             children: Vec::new(),
         }
     }
-    pub fn build(&self, parent: &gtk4::Box) -> gtk4::Grid {
+    pub fn build(&self) -> gtk4::Grid {
         let widget = gtk4::Grid::builder()
             .column_homogeneous(self.col_hom)
             .row_homogeneous(self.row_hom)
@@ -1030,7 +1040,7 @@ impl GridData {
         self.defaults.apply(&widget);
         for child in &self.children {
             let loc = child.1;
-            widget.attach(&child.0.build(parent), loc.0, loc.1, loc.2, loc.3);
+            widget.attach(&child.0.build(), loc.0, loc.1, loc.2, loc.3);
         }
         widget
     }
@@ -1043,10 +1053,10 @@ enum ContainerData {
 }
 
 impl ContainerData {
-    pub fn build(&self, parent: &gtk4::Box) -> Widget {
+    pub fn build(&self) -> Widget {
         match &self {
             ContainerData::Box(container) => container.build().into(),
-            ContainerData::Grid(grid) => grid.build(parent).into(),
+            ContainerData::Grid(grid) => grid.build().into(),
         }
     }
     pub fn get_name(&self) -> String {
@@ -1929,7 +1939,6 @@ impl SpinButtonData {
     }
     pub fn build(&self) -> gtk4::SpinButton {
         let spin = gtk4::SpinButton::builder()
-            .value(self.value)
             .numeric(self.numeric)
             .wrap(self.wrap)
             .climb_rate(self.rate)
@@ -1937,6 +1946,7 @@ impl SpinButtonData {
             .build();
         spin.set_range(self.range.0, self.range.1);
         spin.set_increments(self.increments.0, self.increments.1);
+        spin.set_value(self.value);
         self.defaults.apply(&spin);
         spin
     }
@@ -2113,6 +2123,7 @@ struct WidgetDefaults {
     size_req: Option<(i32, i32)>,
     orientation: gtk4::Orientation,
     overflow: gtk4::Overflow,
+    focusable: bool,
 }
 
 impl WidgetDefaults {
@@ -2129,6 +2140,7 @@ impl WidgetDefaults {
             size_req: None,
             orientation: gtk4::Orientation::Horizontal,
             overflow: gtk4::Overflow::Visible,
+            focusable: true,
         }
     }
     pub fn modify(&mut self, attr: roxmltree::Attribute) {
@@ -2199,6 +2211,10 @@ impl WidgetDefaults {
                 "false" | "f" | "no" | "n" => self.overflow = gtk4::Overflow::Hidden,
                 _ => self.overflow = gtk4::Overflow::Visible,
             },
+            "_clickthrough" | "_ghost" => match val {
+                "false" | "f" | "no" | "n" => self.focusable = true,
+                _ => self.focusable = false,
+            },
             _ => {}
         }
     }
@@ -2214,6 +2230,8 @@ impl WidgetDefaults {
         widget.set_margin_start(self.margin.start);
         widget.set_margin_end(self.margin.end);
         widget.set_widget_name(&self.name);
+        widget.set_can_target(self.focusable);
+        widget.set_can_focus(self.focusable);
         if let Some((width, height)) = &self.size_req {
             widget.set_size_request(*width, *height);
         }
@@ -2247,7 +2265,7 @@ impl WidgetData {
     pub fn build(&self, parent: &gtk4::Box) -> Widget {
         match &self {
             WidgetData::Label(label) => label.build(),
-            WidgetData::Container(container) => container.build(parent),
+            WidgetData::Container(container) => container.build(),
             WidgetData::Button(button) => button.build(parent),
             WidgetData::Canvas(canvas) => canvas.build(),
             WidgetData::Loader(loader) => loader.build(),
