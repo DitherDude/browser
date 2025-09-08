@@ -271,17 +271,6 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                 }
                 _ => data.variant = Some(l_attr::Variant::Normal),
             },
-            "stretch" => match val {
-                "uc" | "ultracondensed" => data.stretch = Some(l_attr::Stretch::UltraCondensed),
-                "ec" | "extracondensed" => data.stretch = Some(l_attr::Stretch::ExtraCondensed),
-                "c" | "condensed" => data.stretch = Some(l_attr::Stretch::Condensed),
-                "sc" | "semicondensed" => data.stretch = Some(l_attr::Stretch::SemiCondensed),
-                "se" | "semiexpanded" => data.stretch = Some(l_attr::Stretch::SemiExpanded),
-                "e" | "expanded" => data.stretch = Some(l_attr::Stretch::Expanded),
-                "ee" | "extraexpanded" => data.stretch = Some(l_attr::Stretch::ExtraExpanded),
-                "ue" | "ultraexpanded" => data.stretch = Some(l_attr::Stretch::UltraExpanded),
-                _ => data.stretch = Some(l_attr::Stretch::Normal),
-            },
             "font_features" | "features" => data.features = Some(val.to_string()),
             "foreground" | "fgcolor" | "color" => {
                 if gtk4::gdk::RGBA::parse(val).is_ok() {
@@ -341,9 +330,9 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                     data.rise = Some(val.to_string());
                 }
             }
-            "baseline_shift" | "fall" => {
+            "baseline_shift" | "shift" => {
                 if val.strip_suffix("pt").unwrap_or(val).parse::<i32>().is_ok() {
-                    data.fall = Some(val.to_string());
+                    data.shift = Some(val.to_string());
                 }
             }
             "font_scale" | "scale" => match val {
@@ -368,13 +357,6 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                 _ => data.fallback = Some(true),
             },
             "lang" => data.lang = Some(val.to_string()),
-            "letter_spacing" | "spacing" => {
-                if let Ok(val) = val.strip_suffix("pt").unwrap_or(val).parse::<f64>() {
-                    if val >= 0f64 {
-                        data.spacing = Some(val);
-                    }
-                }
-            }
             "gravity" => match val {
                 "south" | "bottom" => data.gravity = Some(l_attr::Gravity::South),
                 "east" | "right" => data.gravity = Some(l_attr::Gravity::East),
@@ -457,18 +439,6 @@ mod l_attr {
         Normal,
     }
     #[derive(Debug, PartialEq, Clone)]
-    pub enum Stretch {
-        UltraCondensed,
-        ExtraCondensed,
-        Condensed,
-        SemiCondensed,
-        Normal,
-        SemiExpanded,
-        Expanded,
-        ExtraExpanded,
-        UltraExpanded,
-    }
-    #[derive(Debug, PartialEq, Clone)]
     pub enum UnderLine {
         Single,
         Double,
@@ -520,7 +490,6 @@ struct LabelData {
     style: Option<l_attr::Style>,
     weight: Option<l_attr::Weight>,
     variant: Option<l_attr::Variant>,
-    stretch: Option<l_attr::Stretch>,
     features: Option<String>,
     fcolor: Option<String>,
     bcolor: Option<String>,
@@ -531,13 +500,12 @@ struct LabelData {
     overline: Option<bool>,
     olc: Option<String>,
     rise: Option<String>,
-    fall: Option<String>,
+    shift: Option<String>,
     scale: Option<l_attr::Scale>,
     strikethrough: Option<bool>,
     scolor: Option<String>,
     fallback: Option<bool>,
     lang: Option<String>,
-    spacing: Option<f64>,
     gravity: Option<l_attr::Gravity>,
     hint: Option<l_attr::GravityHint>,
     show: Option<String>,
@@ -560,7 +528,6 @@ impl LabelData {
             style: None,
             weight: None,
             variant: None,
-            stretch: None,
             features: None,
             fcolor: None,
             bcolor: None,
@@ -571,13 +538,12 @@ impl LabelData {
             overline: None,
             olc: None,
             rise: None,
-            fall: None,
+            shift: None,
             scale: None,
             strikethrough: None,
             scolor: None,
             fallback: None,
             lang: None,
-            spacing: None,
             gravity: None,
             hint: None,
             show: None,
@@ -637,22 +603,6 @@ impl LabelData {
                 }
             ));
         }
-        if let Some(stretch) = &self.stretch {
-            a.push_str(&format!(
-                "stretch='{}' ",
-                match *stretch {
-                    l_attr::Stretch::UltraCondensed => "ultracondensed",
-                    l_attr::Stretch::ExtraCondensed => "extracondensed",
-                    l_attr::Stretch::Condensed => "condensed",
-                    l_attr::Stretch::SemiCondensed => "semicondensed",
-                    l_attr::Stretch::Normal => "normal",
-                    l_attr::Stretch::SemiExpanded => "semiexpanded",
-                    l_attr::Stretch::Expanded => "expanded",
-                    l_attr::Stretch::ExtraExpanded => "extraexpanded",
-                    l_attr::Stretch::UltraExpanded => "ultraexpanded",
-                }
-            ));
-        }
         if let Some(features) = &self.features {
             a.push_str(&format!("font_features='{features}' "));
         }
@@ -696,8 +646,8 @@ impl LabelData {
         if let Some(rise) = &self.rise {
             a.push_str(&format!("rise='{rise}' "));
         }
-        if let Some(fall) = &self.fall {
-            a.push_str(&format!("baseline_shift='{fall}' "));
+        if let Some(shift) = &self.shift {
+            a.push_str(&format!("baseline_shift='{shift}' "));
         }
         if let Some(scale) = &self.scale {
             a.push_str(&format!(
@@ -728,9 +678,6 @@ impl LabelData {
         }
         if let Some(lang) = &self.lang {
             a.push_str(&format!("lang='{lang}' "));
-        }
-        if let Some(spacing) = &self.spacing {
-            a.push_str(&format!("letter_spacing='{spacing}pt' "));
         }
         if let Some(gravity) = &self.gravity {
             a.push_str(&format!(
@@ -2194,7 +2141,7 @@ impl WidgetDefaults {
                     self.margin.end = end;
                 }
             }
-            "_name" => self.name = val.trim().to_string(),
+            "_name" | "_" => self.name = val.trim().to_string(),
             "_size" | "_size_req" => {
                 if let Some((Ok(width), Ok(height))) = val
                     .split_once(',')
