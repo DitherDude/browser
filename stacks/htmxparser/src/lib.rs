@@ -14,10 +14,11 @@ pub fn get_elements(markup: String) -> gtk4::Box {
     }
     let _ = gtk4::init();
     let mut data = BoxData::new();
-    data.defaults.hexpand = true;
-    data.defaults.vexpand = true;
-    data.defaults.halign = gtk4::Align::Fill;
-    data.defaults.valign = gtk4::Align::Fill;
+    let mut defaults = WidgetDefaults::new();
+    defaults.hexpand = true;
+    defaults.vexpand = true;
+    defaults.halign = gtk4::Align::Fill;
+    defaults.valign = gtk4::Align::Fill;
     let tree = match Document::parse(&markup) {
         Ok(tree) => tree,
         Err(e) => {
@@ -44,7 +45,7 @@ pub fn get_elements(markup: String) -> gtk4::Box {
             println!("Unrecognised element: {element:#?}");
         }
     }
-    data.build()
+    data.dirty_build(Some(&defaults))
 }
 
 fn derive_kind(name: &str) -> ElemKind {
@@ -125,7 +126,10 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
             .map(|text| {
                 let mut data = LabelData::new();
                 data.text = text.to_string();
-                WidgetData::Label(Box::new(data))
+                WidgetData {
+                    defaults: WidgetDefaults::new(),
+                    data: DataEnum::Label(Box::new(data)),
+                }
             }),
         ElemKind::Loader(loader) => match loader {
             LoaderKind::Spinner => spinner(elem.attributes()),
@@ -142,9 +146,14 @@ fn process_label(
     attributes: Attributes,
     parent: &BoxData,
 ) -> Option<WidgetData> {
-    Some(WidgetData::Label(Box::new(process_text(
-        kind, children, attributes, parent,
-    )?)))
+    if let Some(data) = process_text(kind, children, attributes, parent) {
+        Some(WidgetData {
+            defaults: data.1,
+            data: DataEnum::Label(Box::new(data.0)),
+        })
+    } else {
+        None
+    }
 }
 
 fn process_text(
@@ -152,15 +161,15 @@ fn process_text(
     children: Children,
     attributes: Attributes,
     parent: &BoxData,
-) -> Option<LabelData> {
-    let mut data = LabelData::new();
+) -> Option<(LabelData, WidgetDefaults)> {
     match kind {
-        Text::Kind(kind) => {
-            data = text_kind(kind, children, attributes, None, parent)?;
+        Text::Kind(kind) => text_kind(kind, children, attributes, None, parent),
+        Text::Style(style) => {
+            let mut data = LabelData::new();
+            data.text = raw_text_style(style, children)?;
+            Some((data, WidgetDefaults::new()))
         }
-        Text::Style(style) => data.text = raw_text_style(style, children)?,
     }
-    Some(data)
 }
 
 fn text_kind(
@@ -169,19 +178,24 @@ fn text_kind(
     attributes: Attributes,
     dad: Option<&LabelData>,
     parent: &BoxData,
-) -> Option<LabelData> {
-    let mut data = text_attributes(attributes, dad);
+) -> Option<(LabelData, WidgetDefaults)> {
+    let (mut data, defaults) = text_attributes(attributes, dad);
     for child in children {
         match child.node_type() {
             NodeType::Element => {
                 let name = child.tag_name().name();
-                let label = if let ElemKind::Cloned = derive_kind(name) {
-                    if let Some(WidgetData::Clone(clone)) =
-                        process_cloned(child.attributes(), parent)
+                if let Some((label, _)) = if let ElemKind::Cloned = derive_kind(name) {
+                    if let Some(WidgetData {
+                        defaults: sub_defaults,
+                        data: DataEnum::Clone(clone),
+                    }) = process_cloned(child.attributes(), parent)
                     {
-                        if let WidgetData::Label(label) = *clone {
-                            println!("{}", label.text);
-                            Some(label)
+                        if let WidgetData {
+                            data: DataEnum::Label(label),
+                            ..
+                        } = *clone
+                        {
+                            Some((*label, sub_defaults))
                         } else {
                             None
                         }
@@ -196,18 +210,9 @@ fn text_kind(
                             child.attributes(),
                             Some(&data),
                             parent,
-                        )
-                        .map(Box::new),
+                        ),
                         Text::Style(style) => {
                             if let Some(text) = raw_text_style(&style, child.children()) {
-                                // if data.text.is_empty() {
-                                //     ~~data.text = text;
-                                // } else {
-                                //     let mut raw_data = data.clone();
-                                //     raw_data.children = Vec::new();
-                                //     raw_data.text = text;
-                                //     ~~data.children.push(raw_data);
-                                // }
                                 if data.text.is_empty() {
                                     data.text = text;
                                     None
@@ -215,7 +220,7 @@ fn text_kind(
                                     let mut raw_data = data.clone();
                                     raw_data.children = Vec::new();
                                     raw_data.text = text;
-                                    Some(Box::new(raw_data))
+                                    Some((raw_data, WidgetDefaults::new()))
                                 }
                             } else {
                                 None
@@ -224,9 +229,8 @@ fn text_kind(
                     }
                 } else {
                     None
-                };
-                if let Some(label) = label {
-                    data.children.push(*label);
+                } {
+                    data.children.push(label);
                 }
             }
             NodeType::Text => {
@@ -253,10 +257,10 @@ fn text_kind(
         TextKind::Header6 => data.size = Some("x-small".to_string()),
         TextKind::Normal => {}
     }
-    Some(data)
+    Some((data, defaults))
 }
 
-fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData {
+fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> (LabelData, WidgetDefaults) {
     let mut data = if let Some(dad) = dad {
         let mut data = dad.clone();
         data.text = String::new();
@@ -265,6 +269,7 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
     } else {
         LabelData::new()
     };
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -444,10 +449,10 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData
                 "s" | "sentence" => data.segment = Some(l_attr::Segment::Sentence),
                 _ => {}
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         };
     }
-    data
+    (data, defaults)
 }
 
 mod l_attr {
@@ -520,7 +525,7 @@ mod l_attr {
 #[derive(Debug, PartialEq, Clone)]
 struct LabelData {
     text: String,
-    defaults: WidgetDefaults,
+
     link: Option<String>,
     font: Option<String>,
     face: Option<String>,
@@ -558,7 +563,6 @@ impl LabelData {
     pub fn new() -> Self {
         LabelData {
             text: String::new(),
-            defaults: WidgetDefaults::new(),
             link: None,
             font: None,
             face: None,
@@ -797,13 +801,15 @@ impl LabelData {
         self.children.iter().for_each(|x| text.push_str(&x.text));
         text
     }
-    pub fn build(&self) -> Widget {
+}
+
+impl DataTrait for LabelData {
+    fn build(&self, _: &gtk4::Box) -> Widget {
         let markup = self.compile();
         let label = gtk4::Label::builder()
             .use_markup(true)
             .label(markup)
             .build();
-        self.defaults.apply(&label);
         label.into()
     }
 }
@@ -867,7 +873,6 @@ enum TextKind {
     Header5,
     Header6,
     Normal,
-    // Link,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -884,20 +889,23 @@ enum TextStyle {
 /* #region Containers */
 fn process_box(children: Children, attributes: Attributes) -> Option<WidgetData> {
     let mut data = BoxData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
-        data.modify(attr);
+        data.modify(attr, &mut defaults);
     }
     for child in children {
         if let Some(child) = process_element(&child, &data) {
             data.children.push(child);
         }
     }
-    Some(WidgetData::Container(ContainerData::Box(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Container(ContainerData::Box(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct BoxData {
-    defaults: WidgetDefaults,
     orientation: gtk4::Orientation,
     children: Vec<WidgetData>,
 }
@@ -905,28 +913,29 @@ struct BoxData {
 impl BoxData {
     pub fn new() -> Self {
         BoxData {
-            defaults: WidgetDefaults::new(),
             orientation: gtk4::Orientation::Vertical,
             children: Vec::new(),
         }
     }
-    pub fn modify(&mut self, attr: roxmltree::Attribute) {
+    pub fn modify(&mut self, attr: roxmltree::Attribute, defaults: &mut WidgetDefaults) {
         let val = attr.value();
         match attr.name() {
             "orientation" | "align" => match val {
                 "horizontal" | "h" => self.orientation = gtk4::Orientation::Horizontal,
                 _ => self.orientation = gtk4::Orientation::Vertical,
             },
-            _ => self.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
-    pub fn build(&self) -> gtk4::Box {
+    pub fn dirty_build(&self, defaults: Option<&WidgetDefaults>) -> gtk4::Box {
         let widget = gtk4::Box::builder().orientation(self.orientation).build();
-        self.defaults.apply(&widget);
         for child in &self.children {
-            if !child.is_shadowed() {
+            if !child.get_shadow() {
                 widget.append(&child.build(&widget));
             }
+        }
+        if let Some(defaults) = defaults {
+            defaults.apply(&widget);
         }
         widget
     }
@@ -934,6 +943,7 @@ impl BoxData {
 
 fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData> {
     let mut data = GridData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "column_homogeneous" | "col" => match attr.value() {
@@ -944,7 +954,7 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData
                 "n" | "f" | "no" | "false" => data.row_hom = false,
                 _ => data.row_hom = true,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
     for child in children {
@@ -954,19 +964,25 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData
             }
             continue;
         }
-        let mut parent = BoxData::new();
-        let mut loc = (0i32, 0i32, 1i32, 1i32);
+        let mut gridchild = GridChild {
+            defaults: WidgetDefaults::new(),
+            parent: BoxData::new(),
+            column: 0i32,
+            row: 0i32,
+            width: 1i32,
+            height: 1i32,
+        };
         for attr in child.attributes() {
             let val = attr.value();
             match attr.name() {
                 "c" | "column" => {
                     if let Ok(val) = val.parse::<i32>() {
-                        loc.0 = val;
+                        gridchild.column = val;
                     }
                 }
                 "r" | "row" => {
                     if let Ok(val) = val.parse::<i32>() {
-                        loc.1 = val;
+                        gridchild.row = val;
                     }
                 }
                 "w" | "width" => {
@@ -974,7 +990,7 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData
                         .parse::<i32>()
                         .map(|x| if x > 0 { Some(x) } else { None })
                     {
-                        loc.2 = val;
+                        gridchild.width = val;
                     }
                 }
                 "h" | "height" => {
@@ -982,23 +998,25 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData
                         .parse::<i32>()
                         .map(|x| if x > 0 { Some(x) } else { None })
                     {
-                        loc.3 = val;
+                        gridchild.height = val;
                     }
                 }
-                _ => parent.modify(attr),
+                _ => gridchild.parent.modify(attr, &mut gridchild.defaults),
             };
         }
         for child in child.children() {
             if child.is_text() && child.text().is_some_and(|x| x.trim().is_empty()) {
                 continue;
-            } else if let Some(widget) = process_element(&child, &parent) {
-                parent.children.push(widget);
-                // break;
+            } else if let Some(widget) = process_element(&child, &gridchild.parent) {
+                gridchild.parent.children.push(widget);
             }
         }
-        data.children.push((parent, loc));
+        data.children.push(gridchild);
     }
-    Some(WidgetData::Container(ContainerData::Grid(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Container(ContainerData::Grid(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1010,32 +1028,27 @@ enum ContainerKind {
 
 #[derive(Debug, PartialEq, Clone)]
 struct GridData {
-    defaults: WidgetDefaults,
     col_hom: bool,
     row_hom: bool,
-    children: Vec<(BoxData, (i32, i32, i32, i32))>,
+    children: Vec<GridChild>,
+}
+#[derive(Debug, PartialEq, Clone)]
+struct GridChild {
+    defaults: WidgetDefaults,
+    parent: BoxData,
+    column: i32,
+    row: i32,
+    width: i32,
+    height: i32,
 }
 
 impl GridData {
     pub fn new() -> Self {
         GridData {
-            defaults: WidgetDefaults::new(),
             col_hom: true,
             row_hom: true,
             children: Vec::new(),
         }
-    }
-    pub fn build(&self) -> gtk4::Grid {
-        let widget = gtk4::Grid::builder()
-            .column_homogeneous(self.col_hom)
-            .row_homogeneous(self.row_hom)
-            .build();
-        self.defaults.apply(&widget);
-        for child in &self.children {
-            let loc = child.1;
-            widget.attach(&child.0.build(), loc.0, loc.1, loc.2, loc.3);
-        }
-        widget
     }
 }
 
@@ -1045,35 +1058,26 @@ enum ContainerData {
     Grid(GridData),
 }
 
-impl ContainerData {
-    pub fn build(&self) -> Widget {
+impl DataTrait for ContainerData {
+    fn build(&self, _: &gtk4::Box) -> Widget {
         match &self {
-            ContainerData::Box(container) => container.build().into(),
-            ContainerData::Grid(grid) => grid.build().into(),
-        }
-    }
-    pub fn get_name(&self) -> String {
-        match &self {
-            ContainerData::Box(container) => container.defaults.name.to_string(),
-            ContainerData::Grid(grid) => grid.defaults.name.to_string(),
-        }
-    }
-    pub fn set_name(&mut self, new_name: &str) {
-        match self {
-            ContainerData::Box(container) => container.defaults.name = new_name.to_string(),
-            ContainerData::Grid(grid) => grid.defaults.name = new_name.to_string(),
-        }
-    }
-    pub fn is_shadowed(&self) -> bool {
-        match &self {
-            ContainerData::Box(container) => container.defaults.shadow,
-            ContainerData::Grid(grid) => grid.defaults.shadow,
-        }
-    }
-    pub fn remove_shadow(&mut self) {
-        match self {
-            ContainerData::Box(container) => container.defaults.shadow = false,
-            ContainerData::Grid(grid) => grid.defaults.shadow = false,
+            ContainerData::Box(container) => container.dirty_build(None).into(),
+            ContainerData::Grid(container) => {
+                let widget = gtk4::Grid::builder()
+                    .column_homogeneous(container.col_hom)
+                    .row_homogeneous(container.row_hom)
+                    .build();
+                for child in &container.children {
+                    widget.attach(
+                        &child.parent.dirty_build(Some(&child.defaults)),
+                        child.column,
+                        child.row,
+                        child.width,
+                        child.height,
+                    );
+                }
+                widget.into()
+            }
         }
     }
 }
@@ -1086,8 +1090,9 @@ fn normal_button(
     parent: &BoxData,
 ) -> Option<WidgetData> {
     let mut data = NormalButtonData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
-        data.defaults.modify(attr);
+        defaults.modify(attr);
     }
     for child in children {
         if let Some(widget) = process_element(&child, parent) {
@@ -1095,32 +1100,20 @@ fn normal_button(
             break;
         }
     }
-    Some(WidgetData::Button(ButtonData::Normal(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Button(ButtonData::Normal(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct NormalButtonData {
-    defaults: WidgetDefaults,
     child: Option<Box<WidgetData>>,
 }
 
 impl NormalButtonData {
     pub fn new() -> Self {
-        NormalButtonData {
-            defaults: WidgetDefaults::new(),
-            child: None,
-        }
-    }
-    pub fn build(&self, parent: &gtk4::Box) -> gtk4::Button {
-        let widget = gtk4::Button::builder().build();
-        self.defaults.apply(&widget);
-        if let Some(child) = &self.child {
-            if !child.is_shadowed() {
-                let child = child.build(parent);
-                widget.set_child(Some(&child));
-            }
-        }
-        widget
+        NormalButtonData { child: None }
     }
 }
 
@@ -1130,6 +1123,7 @@ fn toggle_button(
     parent: &BoxData,
 ) -> Option<WidgetData> {
     let mut data = ToggleButtonData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
@@ -1139,7 +1133,7 @@ fn toggle_button(
             "group" => {
                 data.group = Some(attr.value().to_string());
             }
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
     for child in children {
@@ -1148,12 +1142,14 @@ fn toggle_button(
             break;
         }
     }
-    Some(WidgetData::Button(ButtonData::Toggle(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Button(ButtonData::Toggle(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct ToggleButtonData {
-    defaults: WidgetDefaults,
     checked: bool,
     group: Option<String>,
     child: Option<Box<WidgetData>>,
@@ -1162,33 +1158,10 @@ struct ToggleButtonData {
 impl ToggleButtonData {
     pub fn new() -> Self {
         ToggleButtonData {
-            defaults: WidgetDefaults::new(),
             checked: false,
             group: None,
             child: None,
         }
-    }
-    pub fn build(&self, parent: &gtk4::Box) -> gtk4::ToggleButton {
-        let widget = gtk4::ToggleButton::builder().active(self.checked).build();
-        self.defaults.apply(&widget);
-        if let Some(group) = &self.group {
-            let mut child = parent.first_child();
-            while let Some(cur_child) = child {
-                if let Some(cur_child) = cur_child.downcast_ref::<gtk4::ToggleButton>() {
-                    if cur_child.widget_name() == *group {
-                        widget.set_group(Some(cur_child));
-                    }
-                }
-                child = cur_child.next_sibling();
-            }
-        }
-        if let Some(child) = &self.child {
-            if !child.is_shadowed() {
-                let child = child.build(parent);
-                widget.set_child(Some(&child));
-            }
-        }
-        widget
     }
 }
 
@@ -1198,6 +1171,7 @@ fn check_button(
     parent: &BoxData,
 ) -> Option<WidgetData> {
     let mut data = CheckButtonData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
@@ -1207,7 +1181,7 @@ fn check_button(
             "group" => {
                 data.group = Some(attr.value().to_string());
             }
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
     for child in children {
@@ -1216,12 +1190,14 @@ fn check_button(
             break;
         }
     }
-    Some(WidgetData::Button(ButtonData::Checked(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Button(ButtonData::Checked(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct CheckButtonData {
-    defaults: WidgetDefaults,
     checked: bool,
     group: Option<String>,
     child: Option<Box<WidgetData>>,
@@ -1230,36 +1206,10 @@ struct CheckButtonData {
 impl CheckButtonData {
     pub fn new() -> Self {
         CheckButtonData {
-            defaults: WidgetDefaults::new(),
             checked: false,
             group: None,
             child: None,
         }
-    }
-    pub fn build(&self, parent: &gtk4::Box) -> gtk4::CheckButton {
-        let widget = gtk4::CheckButton::builder().build();
-        widget.set_active(self.checked);
-        self.defaults.apply(&widget);
-        if let Some(group) = &self.group {
-            let mut child = parent.first_child();
-            while let Some(cur_child) = child {
-                if let Some(cur_child) = cur_child.downcast_ref::<gtk4::CheckButton>() {
-                    if cur_child.widget_name() == *group {
-                        widget.set_group(Some(cur_child));
-                    }
-                }
-                child = cur_child.next_sibling();
-            }
-        }
-        if let Some(child) = &self.child {
-            if !child.is_shadowed() {
-                let child = child.build(parent);
-                // POV when gtk4-rs forgot to implement ButtonExt for CheckButton, so you
-                // have to implement `CheckButton::set_child(Option<&impl IsA<Widget>)` yourself:
-                widget.set_property("child", Some(&child));
-            }
-        }
-        widget
     }
 }
 
@@ -1277,94 +1227,108 @@ enum ButtonData {
     Checked(CheckButtonData),
 }
 
-impl ButtonData {
-    pub fn build(&self, parent: &gtk4::Box) -> Widget {
+impl DataTrait for ButtonData {
+    fn build(&self, parent: &gtk4::Box) -> Widget {
         match &self {
-            ButtonData::Normal(button) => button.build(parent).into(),
-            ButtonData::Toggle(button) => button.build(parent).into(),
-            ButtonData::Checked(button) => button.build(parent).into(),
-        }
-    }
-    pub fn get_name(&self) -> String {
-        match &self {
-            ButtonData::Normal(button) => button.defaults.name.to_string(),
-            ButtonData::Toggle(button) => button.defaults.name.to_string(),
-            ButtonData::Checked(button) => button.defaults.name.to_string(),
-        }
-    }
-    pub fn set_name(&mut self, new_name: &str) {
-        match self {
-            ButtonData::Normal(button) => button.defaults.name = new_name.to_string(),
-            ButtonData::Toggle(button) => button.defaults.name = new_name.to_string(),
-            ButtonData::Checked(button) => button.defaults.name = new_name.to_string(),
-        }
-    }
-    pub fn is_shadowed(&self) -> bool {
-        match &self {
-            ButtonData::Normal(button) => button.defaults.shadow,
-            ButtonData::Toggle(button) => button.defaults.shadow,
-            ButtonData::Checked(button) => button.defaults.shadow,
-        }
-    }
-    pub fn remove_shadow(&mut self) {
-        match self {
-            ButtonData::Normal(button) => button.defaults.shadow = false,
-            ButtonData::Toggle(button) => button.defaults.shadow = false,
-            ButtonData::Checked(button) => button.defaults.shadow = false,
+            ButtonData::Normal(button) => {
+                let widget = gtk4::Button::builder().build();
+                if let Some(child) = &button.child {
+                    if !child.get_shadow() {
+                        let child = child.build(parent);
+                        widget.set_child(Some(&child));
+                    }
+                }
+                widget.into()
+            }
+            ButtonData::Toggle(button) => {
+                let widget = gtk4::ToggleButton::builder().active(button.checked).build();
+                if let Some(group) = &button.group {
+                    let mut child = parent.first_child();
+                    while let Some(cur_child) = child {
+                        if let Some(cur_child) = cur_child.downcast_ref::<gtk4::ToggleButton>() {
+                            if cur_child.widget_name() == *group {
+                                widget.set_group(Some(cur_child));
+                            }
+                        }
+                        child = cur_child.next_sibling();
+                    }
+                }
+                if let Some(child) = &button.child {
+                    if !child.get_shadow() {
+                        let child = child.build(parent);
+                        widget.set_child(Some(&child));
+                    }
+                }
+                widget.into()
+            }
+            ButtonData::Checked(button) => {
+                let widget = gtk4::CheckButton::builder().build();
+                widget.set_active(button.checked);
+                if let Some(group) = &button.group {
+                    let mut child = parent.first_child();
+                    while let Some(cur_child) = child {
+                        if let Some(cur_child) = cur_child.downcast_ref::<gtk4::CheckButton>() {
+                            if cur_child.widget_name() == *group {
+                                widget.set_group(Some(cur_child));
+                            }
+                        }
+                        child = cur_child.next_sibling();
+                    }
+                }
+                if let Some(child) = &button.child {
+                    if !child.get_shadow() {
+                        let child = child.build(parent);
+                        // POV when gtk4-rs forgot to implement ButtonExt for CheckButton, so you
+                        // have to implement `CheckButton::set_child(Option<&impl IsA<Widget>)` yourself:
+                        widget.set_property("child", Some(&child));
+                    }
+                }
+                widget.into()
+            }
         }
     }
 }
 /* #endregion Buttons */
 /* #region Canvases */
 fn gl_area(attributes: Attributes) -> Option<WidgetData> {
-    let mut data = GLAreaData::new();
+    let data = GLAreaData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
-        data.defaults.modify(attr);
+        defaults.modify(attr);
     }
-    Some(WidgetData::Canvas(CanvasData::GLArea(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Canvas(CanvasData::GLArea(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct GLAreaData {
-    defaults: WidgetDefaults,
-}
+struct GLAreaData {}
 
 impl GLAreaData {
     pub fn new() -> Self {
-        GLAreaData {
-            defaults: WidgetDefaults::new(),
-        }
-    }
-    pub fn build(&self) -> gtk4::GLArea {
-        let widget = gtk4::GLArea::builder().build();
-        self.defaults.apply(&widget);
-        widget
+        GLAreaData {}
     }
 }
 
 fn drawing_area(attributes: Attributes) -> Option<WidgetData> {
-    let mut data = DrawingAreaData::new();
+    let data = DrawingAreaData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
-        data.defaults.modify(attr);
+        defaults.modify(attr);
     }
-    Some(WidgetData::Canvas(CanvasData::DrawingArea(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Canvas(CanvasData::DrawingArea(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct DrawingAreaData {
-    defaults: WidgetDefaults,
-}
+struct DrawingAreaData {}
 
 impl DrawingAreaData {
     pub fn new() -> Self {
-        DrawingAreaData {
-            defaults: WidgetDefaults::new(),
-        }
-    }
-    pub fn build(&self) -> gtk4::DrawingArea {
-        let widget = gtk4::DrawingArea::builder().build();
-        self.defaults.apply(&widget);
-        widget
+        DrawingAreaData {}
     }
 }
 
@@ -1380,35 +1344,11 @@ enum CanvasData {
     DrawingArea(DrawingAreaData),
 }
 
-impl CanvasData {
-    pub fn build(&self) -> Widget {
+impl DataTrait for CanvasData {
+    fn build(&self, _: &gtk4::Box) -> Widget {
         match &self {
-            CanvasData::DrawingArea(canvas) => canvas.build().into(),
-            CanvasData::GLArea(canvas) => canvas.build().into(),
-        }
-    }
-    pub fn get_name(&self) -> String {
-        match &self {
-            CanvasData::DrawingArea(canvas) => canvas.defaults.name.to_string(),
-            CanvasData::GLArea(canvas) => canvas.defaults.name.to_string(),
-        }
-    }
-    pub fn set_name(&mut self, new_name: &str) {
-        match self {
-            CanvasData::DrawingArea(canvas) => canvas.defaults.name = new_name.to_string(),
-            CanvasData::GLArea(canvas) => canvas.defaults.name = new_name.to_string(),
-        }
-    }
-    pub fn is_shadowed(&self) -> bool {
-        match &self {
-            CanvasData::DrawingArea(canvas) => canvas.defaults.shadow,
-            CanvasData::GLArea(canvas) => canvas.defaults.shadow,
-        }
-    }
-    pub fn remove_shadow(&mut self) {
-        match self {
-            CanvasData::DrawingArea(canvas) => canvas.defaults.shadow = false,
-            CanvasData::GLArea(canvas) => canvas.defaults.shadow = false,
+            CanvasData::GLArea(_) => gtk4::GLArea::builder().build().into(),
+            CanvasData::DrawingArea(_) => gtk4::DrawingArea::builder().build().into(),
         }
     }
 }
@@ -1416,40 +1356,36 @@ impl CanvasData {
 /* #region Loaders */
 fn spinner(attributes: Attributes) -> Option<WidgetData> {
     let mut data = SpinnerData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "spin" | "spinning" => match attr.value() {
                 "f" | "false" | "n" | "no" => data.spinning = false,
                 _ => data.spinning = true,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
-    Some(WidgetData::Loader(LoaderData::Spinner(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Loader(LoaderData::Spinner(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct SpinnerData {
-    defaults: WidgetDefaults,
     spinning: bool,
 }
 
 impl SpinnerData {
     pub fn new() -> Self {
-        SpinnerData {
-            defaults: WidgetDefaults::new(),
-            spinning: true,
-        }
-    }
-    pub fn build(&self) -> gtk4::Spinner {
-        let spinner = gtk4::Spinner::builder().spinning(self.spinning).build();
-        self.defaults.apply(&spinner);
-        spinner
+        SpinnerData { spinning: true }
     }
 }
 
 fn level_bar(attributes: Attributes) -> Option<WidgetData> {
     let mut data = LevelBarData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1480,15 +1416,17 @@ fn level_bar(attributes: Attributes) -> Option<WidgetData> {
                 "false" | "f" | "no" | "n" => data.inverted = false,
                 _ => data.inverted = true,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
-    Some(WidgetData::Loader(LoaderData::LevelBar(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Loader(LoaderData::LevelBar(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct LevelBarData {
-    defaults: WidgetDefaults,
     progress: f64,
     min: f64,
     max: f64,
@@ -1499,24 +1437,12 @@ struct LevelBarData {
 impl LevelBarData {
     pub fn new() -> Self {
         LevelBarData {
-            defaults: WidgetDefaults::new(),
             progress: 0f64,
             min: 0f64,
             max: 100f64,
             mode: gtk4::LevelBarMode::Continuous,
             inverted: false,
         }
-    }
-    pub fn build(&self) -> gtk4::LevelBar {
-        let levelbar = gtk4::LevelBar::builder()
-            .value(self.progress)
-            .min_value(self.min)
-            .max_value(self.max)
-            .mode(self.mode)
-            .inverted(self.inverted)
-            .build();
-        self.defaults.apply(&levelbar);
-        levelbar
     }
 }
 
@@ -1526,6 +1452,7 @@ fn progress_bar(
     parent: &BoxData,
 ) -> Option<WidgetData> {
     let mut data = ProgressBarData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1559,20 +1486,26 @@ fn progress_bar(
                 "false" | "f" | "no" | "n" => data.inverted = false,
                 _ => data.inverted = true,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
     for child in children {
-        if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
+        if let Some(WidgetData {
+            data: DataEnum::Label(label),
+            ..
+        }) = process_element(&child, parent)
+        {
             data.text.push_str(&label.concat());
         }
     }
-    Some(WidgetData::Loader(LoaderData::ProgressBar(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Loader(LoaderData::ProgressBar(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct ProgressBarData {
-    defaults: WidgetDefaults,
     ellipsize: gtk4::pango::EllipsizeMode,
     progress: f64,
     inverted: bool,
@@ -1583,25 +1516,12 @@ struct ProgressBarData {
 impl ProgressBarData {
     pub fn new() -> Self {
         ProgressBarData {
-            defaults: WidgetDefaults::new(),
             ellipsize: gtk4::pango::EllipsizeMode::None,
             progress: 0f64,
             inverted: false,
             pulse: 0f64,
             text: String::new(),
         }
-    }
-    pub fn build(&self) -> gtk4::ProgressBar {
-        let progressbar = gtk4::ProgressBar::builder()
-            .fraction(self.progress)
-            .inverted(self.inverted)
-            .pulse_step(self.pulse)
-            .text(&self.text)
-            .ellipsize(self.ellipsize)
-            .show_text(!self.text.is_empty())
-            .build();
-        self.defaults.apply(&progressbar);
-        progressbar
     }
 }
 
@@ -1618,40 +1538,30 @@ enum LoaderData {
     ProgressBar(ProgressBarData),
 }
 
-impl LoaderData {
-    pub fn build(&self) -> Widget {
+impl DataTrait for LoaderData {
+    fn build(&self, _: &gtk4::Box) -> Widget {
         match &self {
-            LoaderData::Spinner(spinner) => spinner.build().into(),
-            LoaderData::LevelBar(bar) => bar.build().into(),
-            LoaderData::ProgressBar(bar) => bar.build().into(),
-        }
-    }
-    pub fn get_name(&self) -> String {
-        match &self {
-            LoaderData::Spinner(spinner) => spinner.defaults.name.to_string(),
-            LoaderData::LevelBar(bar) => bar.defaults.name.to_string(),
-            LoaderData::ProgressBar(bar) => bar.defaults.name.to_string(),
-        }
-    }
-    pub fn set_name(&mut self, new_name: &str) {
-        match self {
-            LoaderData::Spinner(spinner) => spinner.defaults.name = new_name.to_string(),
-            LoaderData::LevelBar(bar) => bar.defaults.name = new_name.to_string(),
-            LoaderData::ProgressBar(bar) => bar.defaults.name = new_name.to_string(),
-        }
-    }
-    pub fn is_shadowed(&self) -> bool {
-        match &self {
-            LoaderData::Spinner(spinner) => spinner.defaults.shadow,
-            LoaderData::LevelBar(bar) => bar.defaults.shadow,
-            LoaderData::ProgressBar(bar) => bar.defaults.shadow,
-        }
-    }
-    pub fn remove_shadow(&mut self) {
-        match self {
-            LoaderData::Spinner(spinner) => spinner.defaults.shadow = false,
-            LoaderData::LevelBar(bar) => bar.defaults.shadow = false,
-            LoaderData::ProgressBar(bar) => bar.defaults.shadow = false,
+            LoaderData::Spinner(loader) => gtk4::Spinner::builder()
+                .spinning(loader.spinning)
+                .build()
+                .into(),
+            LoaderData::LevelBar(loader) => gtk4::LevelBar::builder()
+                .value(loader.progress)
+                .min_value(loader.min)
+                .max_value(loader.max)
+                .mode(loader.mode)
+                .inverted(loader.inverted)
+                .build()
+                .into(),
+            LoaderData::ProgressBar(loader) => gtk4::ProgressBar::builder()
+                .fraction(loader.progress)
+                .inverted(loader.inverted)
+                .pulse_step(loader.pulse)
+                .text(&loader.text)
+                .ellipsize(loader.ellipsize)
+                .show_text(!loader.text.is_empty())
+                .build()
+                .into(),
         }
     }
 }
@@ -1663,6 +1573,7 @@ fn process_textview(
     parent: &BoxData,
 ) -> Option<WidgetData> {
     let mut data = TextViewData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1698,20 +1609,26 @@ fn process_textview(
                 "false" | "f" | "no" | "n" => data.monospace = false,
                 _ => data.monospace = true,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
     for child in children {
-        if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
+        if let Some(WidgetData {
+            data: DataEnum::Label(label),
+            ..
+        }) = process_element(&child, parent)
+        {
             data.buffer.push_str(&label.concat());
         }
     }
-    Some(WidgetData::Input(InputData::TextView(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Input(InputData::TextView(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct TextViewData {
-    defaults: WidgetDefaults,
     buffer: String,
     editable: bool,
     wrap_mode: gtk4::WrapMode,
@@ -1724,7 +1641,6 @@ struct TextViewData {
 impl TextViewData {
     pub fn new() -> Self {
         TextViewData {
-            defaults: WidgetDefaults::new(),
             buffer: String::new(),
             editable: true,
             wrap_mode: gtk4::WrapMode::None,
@@ -1734,25 +1650,11 @@ impl TextViewData {
             monospace: false,
         }
     }
-    pub fn build(&self) -> gtk4::TextView {
-        let buffer = gtk4::TextBuffer::new(None);
-        buffer.set_text(&self.buffer);
-        let textview = gtk4::TextView::builder()
-            .buffer(&buffer)
-            .editable(self.editable)
-            .wrap_mode(self.wrap_mode)
-            .justification(self.align)
-            .indent(self.indent)
-            .cursor_visible(self.cursor)
-            .monospace(self.monospace)
-            .build();
-        self.defaults.apply(&textview);
-        textview
-    }
 }
 
 fn process_entry(attributes: Attributes) -> Option<WidgetData> {
     let mut data = EntryData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1763,15 +1665,17 @@ fn process_entry(attributes: Attributes) -> Option<WidgetData> {
                     data.max = val;
                 }
             }
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
-    Some(WidgetData::Input(InputData::Entry(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Input(InputData::Entry(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct EntryData {
-    defaults: WidgetDefaults,
     text: String,
     hint: String,
     max: i32,
@@ -1780,25 +1684,16 @@ struct EntryData {
 impl EntryData {
     pub fn new() -> Self {
         EntryData {
-            defaults: WidgetDefaults::new(),
             text: String::new(),
             hint: String::new(),
             max: 0,
         }
     }
-    pub fn build(&self) -> gtk4::Entry {
-        let entry = gtk4::Entry::builder()
-            .text(&self.text)
-            .placeholder_text(&self.hint)
-            .max_length(self.max)
-            .build();
-        self.defaults.apply(&entry);
-        entry
-    }
 }
 
 fn search_entry(attributes: Attributes) -> Option<WidgetData> {
     let mut data = SearchEntryData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1808,15 +1703,17 @@ fn search_entry(attributes: Attributes) -> Option<WidgetData> {
                 "true" | "t" | "yes" | "y" => data.activate = true,
                 _ => data.activate = false,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
-    Some(WidgetData::Input(InputData::SearchEntry(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Input(InputData::SearchEntry(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct SearchEntryData {
-    defaults: WidgetDefaults,
     text: String,
     hint: String,
     activate: bool,
@@ -1825,25 +1722,16 @@ struct SearchEntryData {
 impl SearchEntryData {
     pub fn new() -> Self {
         SearchEntryData {
-            defaults: WidgetDefaults::new(),
             text: String::new(),
             hint: String::new(),
             activate: true,
         }
     }
-    pub fn build(&self) -> gtk4::SearchEntry {
-        let entry = gtk4::SearchEntry::builder()
-            .text(&self.text)
-            .placeholder_text(&self.hint)
-            .activates_default(self.activate)
-            .build();
-        self.defaults.apply(&entry);
-        entry
-    }
 }
 
 fn password_entry(attributes: Attributes) -> Option<WidgetData> {
     let mut data = PasswordEntryData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1857,15 +1745,17 @@ fn password_entry(attributes: Attributes) -> Option<WidgetData> {
                 "true" | "t" | "yes" | "y" => data.activate = true,
                 _ => data.activate = false,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
-    Some(WidgetData::Input(InputData::PasswordEntry(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Input(InputData::PasswordEntry(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct PasswordEntryData {
-    defaults: WidgetDefaults,
     text: String,
     hint: String,
     icon: bool,
@@ -1875,27 +1765,17 @@ struct PasswordEntryData {
 impl PasswordEntryData {
     pub fn new() -> Self {
         PasswordEntryData {
-            defaults: WidgetDefaults::new(),
             text: String::new(),
             hint: String::new(),
             icon: true,
             activate: true,
         }
     }
-    pub fn build(&self) -> gtk4::PasswordEntry {
-        let entry = gtk4::PasswordEntry::builder()
-            .text(&self.text)
-            .placeholder_text(&self.hint)
-            .show_peek_icon(self.icon)
-            .activates_default(self.activate)
-            .build();
-        self.defaults.apply(&entry);
-        entry
-    }
 }
 
 fn spin_button(attributes: Attributes) -> Option<WidgetData> {
     let mut data = SpinButtonData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1957,15 +1837,17 @@ fn spin_button(attributes: Attributes) -> Option<WidgetData> {
                 "false" | "f" | "no" | "n" => data.snap = false,
                 _ => data.snap = true,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
-    Some(WidgetData::Input(InputData::Spin(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Input(InputData::Spin(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct SpinButtonData {
-    defaults: WidgetDefaults,
     value: f64,
     range: (f64, f64),
     increments: (f64, f64),
@@ -1978,7 +1860,6 @@ struct SpinButtonData {
 impl SpinButtonData {
     pub fn new() -> Self {
         SpinButtonData {
-            defaults: WidgetDefaults::new(),
             value: 0f64,
             range: (0f64, 100f64),
             increments: (1f64, 5f64),
@@ -1988,19 +1869,6 @@ impl SpinButtonData {
             snap: false,
         }
     }
-    pub fn build(&self) -> gtk4::SpinButton {
-        let spin = gtk4::SpinButton::builder()
-            .numeric(self.numeric)
-            .wrap(self.wrap)
-            .climb_rate(self.rate)
-            .snap_to_ticks(self.snap)
-            .build();
-        spin.set_range(self.range.0, self.range.1);
-        spin.set_increments(self.increments.0, self.increments.1);
-        spin.set_value(self.value);
-        self.defaults.apply(&spin);
-        spin
-    }
 }
 
 fn editable_label(
@@ -2009,6 +1877,7 @@ fn editable_label(
     parent: &BoxData,
 ) -> Option<WidgetData> {
     let mut data = EditableLabelData::new();
+    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -2016,20 +1885,26 @@ fn editable_label(
                 "true" | "t" | "yes" | "y" => data.editable = true,
                 _ => data.editable = false,
             },
-            _ => data.defaults.modify(attr),
+            _ => defaults.modify(attr),
         }
     }
     for child in children {
-        if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
+        if let Some(WidgetData {
+            data: DataEnum::Label(label),
+            ..
+        }) = process_element(&child, parent)
+        {
             data.text.push_str(&label.concat());
         }
     }
-    Some(WidgetData::Input(InputData::Editable(data)))
+    Some(WidgetData {
+        defaults,
+        data: DataEnum::Input(InputData::Editable(data)),
+    })
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct EditableLabelData {
-    defaults: WidgetDefaults,
     text: String,
     editable: bool,
 }
@@ -2037,18 +1912,9 @@ struct EditableLabelData {
 impl EditableLabelData {
     pub fn new() -> Self {
         EditableLabelData {
-            defaults: WidgetDefaults::new(),
             text: String::new(),
             editable: true,
         }
-    }
-    pub fn build(&self) -> gtk4::EditableLabel {
-        let label = gtk4::EditableLabel::builder()
-            .text(&self.text)
-            .editable(self.editable)
-            .build();
-        self.defaults.apply(&label);
-        label
     }
 }
 
@@ -2072,55 +1938,59 @@ enum InputData {
     Editable(EditableLabelData),
 }
 
-impl InputData {
-    pub fn build(&self) -> Widget {
+impl DataTrait for InputData {
+    fn build(&self, _: &gtk4::Box) -> Widget {
         match &self {
-            InputData::TextView(input) => input.build().into(),
-            InputData::Entry(entry) => entry.build().into(),
-            InputData::SearchEntry(entry) => entry.build().into(),
-            InputData::PasswordEntry(entry) => entry.build().into(),
-            InputData::Spin(spin) => spin.build().into(),
-            InputData::Editable(label) => label.build().into(),
-        }
-    }
-    pub fn get_name(&self) -> String {
-        match &self {
-            InputData::TextView(input) => input.defaults.name.to_string(),
-            InputData::Entry(entry) => entry.defaults.name.to_string(),
-            InputData::SearchEntry(entry) => entry.defaults.name.to_string(),
-            InputData::PasswordEntry(entry) => entry.defaults.name.to_string(),
-            InputData::Spin(spin) => spin.defaults.name.to_string(),
-            InputData::Editable(label) => label.defaults.name.to_string(),
-        }
-    }
-    pub fn set_name(&mut self, new_name: &str) {
-        match self {
-            InputData::TextView(input) => input.defaults.name = new_name.to_string(),
-            InputData::Entry(entry) => entry.defaults.name = new_name.to_string(),
-            InputData::SearchEntry(entry) => entry.defaults.name = new_name.to_string(),
-            InputData::PasswordEntry(entry) => entry.defaults.name = new_name.to_string(),
-            InputData::Spin(spin) => spin.defaults.name = new_name.to_string(),
-            InputData::Editable(label) => label.defaults.name = new_name.to_string(),
-        }
-    }
-    pub fn is_shadowed(&self) -> bool {
-        match &self {
-            InputData::TextView(input) => input.defaults.shadow,
-            InputData::Entry(entry) => entry.defaults.shadow,
-            InputData::SearchEntry(entry) => entry.defaults.shadow,
-            InputData::PasswordEntry(entry) => entry.defaults.shadow,
-            InputData::Spin(spin) => spin.defaults.shadow,
-            InputData::Editable(label) => label.defaults.shadow,
-        }
-    }
-    pub fn remove_shadow(&mut self) {
-        match self {
-            InputData::TextView(input) => input.defaults.shadow = false,
-            InputData::Entry(entry) => entry.defaults.shadow = false,
-            InputData::SearchEntry(entry) => entry.defaults.shadow = false,
-            InputData::PasswordEntry(entry) => entry.defaults.shadow = false,
-            InputData::Spin(spin) => spin.defaults.shadow = false,
-            InputData::Editable(label) => label.defaults.shadow = false,
+            InputData::TextView(input) => {
+                let buffer = gtk4::TextBuffer::new(None);
+                buffer.set_text(&input.buffer);
+                gtk4::TextView::builder()
+                    .buffer(&buffer)
+                    .editable(input.editable)
+                    .wrap_mode(input.wrap_mode)
+                    .justification(input.align)
+                    .indent(input.indent)
+                    .cursor_visible(input.cursor)
+                    .monospace(input.monospace)
+                    .build()
+                    .into()
+            }
+            InputData::Entry(input) => gtk4::Entry::builder()
+                .text(&input.text)
+                .placeholder_text(&input.hint)
+                .max_length(input.max)
+                .build()
+                .into(),
+            InputData::SearchEntry(input) => gtk4::SearchEntry::builder()
+                .text(&input.text)
+                .placeholder_text(&input.hint)
+                .activates_default(input.activate)
+                .build()
+                .into(),
+            InputData::PasswordEntry(input) => gtk4::PasswordEntry::builder()
+                .text(&input.text)
+                .placeholder_text(&input.hint)
+                .show_peek_icon(input.icon)
+                .activates_default(input.activate)
+                .build()
+                .into(),
+            InputData::Spin(input) => {
+                let spin = gtk4::SpinButton::builder()
+                    .numeric(input.numeric)
+                    .wrap(input.wrap)
+                    .climb_rate(input.rate)
+                    .snap_to_ticks(input.snap)
+                    .build();
+                spin.set_range(input.range.0, input.range.1);
+                spin.set_increments(input.increments.0, input.increments.1);
+                spin.set_value(input.value);
+                spin.into()
+            }
+            InputData::Editable(input) => gtk4::EditableLabel::builder()
+                .text(&input.text)
+                .editable(input.editable)
+                .build()
+                .into(),
         }
     }
 }
@@ -2150,11 +2020,14 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
         for cur_child in &parent.children {
             if cur_child.get_name() == old_name {
                 let mut new_child = cur_child.clone();
-                new_child.remove_shadow();
+                new_child.rem_shadow();
                 if let Some(new_name) = new_name {
                     new_child.set_name(new_name);
                 }
-                return Some(WidgetData::Clone(Box::new(new_child)));
+                return Some(WidgetData {
+                    defaults: WidgetDefaults::new(),
+                    data: DataEnum::Clone(Box::new(new_child)),
+                });
             }
         }
     }
@@ -2329,7 +2202,7 @@ enum ElemKind {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-enum WidgetData {
+enum DataEnum {
     Label(Box<LabelData>),
     Container(ContainerData),
     Button(ButtonData),
@@ -2339,61 +2212,55 @@ enum WidgetData {
     Clone(Box<WidgetData>),
 }
 
+pub trait DataTrait {
+    fn build(&self, parent: &gtk4::Box) -> Widget;
+}
+
+impl DataTrait for DataEnum {
+    fn build(&self, parent: &gtk4::Box) -> Widget {
+        match &self {
+            DataEnum::Label(label) => label.build(parent),
+            DataEnum::Container(container) => container.build(parent),
+            DataEnum::Button(button) => button.build(parent),
+            DataEnum::Canvas(canvas) => canvas.build(parent),
+            DataEnum::Loader(loader) => loader.build(parent),
+            DataEnum::Input(input) => input.build(parent),
+            DataEnum::Clone(clone) => clone.build(parent),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct WidgetData {
+    defaults: WidgetDefaults,
+    data: DataEnum,
+}
+
 impl WidgetData {
     pub fn build(&self, parent: &gtk4::Box) -> Widget {
-        match &self {
-            WidgetData::Label(label) => label.build(),
-            WidgetData::Container(container) => container.build(),
-            WidgetData::Button(button) => button.build(parent),
-            WidgetData::Canvas(canvas) => canvas.build(),
-            WidgetData::Loader(loader) => loader.build(),
-            WidgetData::Input(input) => input.build(),
-            WidgetData::Clone(clone) => clone.build(parent),
-        }
+        let widget = self.data.build(parent);
+        self.defaults.apply(&widget);
+        widget
     }
     pub fn get_name(&self) -> String {
-        match &self {
-            WidgetData::Label(label) => label.defaults.name.to_string(),
-            WidgetData::Container(container) => container.get_name(),
-            WidgetData::Button(button) => button.get_name(),
-            WidgetData::Canvas(canvas) => canvas.get_name(),
-            WidgetData::Loader(loader) => loader.get_name(),
-            WidgetData::Input(input) => input.get_name(),
-            WidgetData::Clone(clone) => clone.get_name(),
-        }
+        self.defaults.name.to_string()
     }
     pub fn set_name(&mut self, new_name: &str) {
-        match self {
-            WidgetData::Label(label) => label.defaults.name = new_name.to_string(),
-            WidgetData::Container(container) => container.set_name(new_name),
-            WidgetData::Button(button) => button.set_name(new_name),
-            WidgetData::Canvas(canvas) => canvas.set_name(new_name),
-            WidgetData::Loader(loader) => loader.set_name(new_name),
-            WidgetData::Input(input) => input.set_name(new_name),
-            WidgetData::Clone(clone) => clone.set_name(new_name),
-        }
+        self.defaults.name = new_name.to_string();
     }
-    pub fn is_shadowed(&self) -> bool {
-        match &self {
-            WidgetData::Label(label) => label.defaults.shadow,
-            WidgetData::Container(container) => container.is_shadowed(),
-            WidgetData::Button(button) => button.is_shadowed(),
-            WidgetData::Canvas(canvas) => canvas.is_shadowed(),
-            WidgetData::Loader(loader) => loader.is_shadowed(),
-            WidgetData::Input(input) => input.is_shadowed(),
-            WidgetData::Clone(clone) => clone.is_shadowed(),
-        }
+    pub fn get_shadow(&self) -> bool {
+        self.defaults.shadow
     }
-    pub fn remove_shadow(&mut self) {
-        match self {
-            WidgetData::Label(label) => label.defaults.shadow = false,
-            WidgetData::Container(container) => container.remove_shadow(),
-            WidgetData::Button(button) => button.remove_shadow(),
-            WidgetData::Canvas(canvas) => canvas.remove_shadow(),
-            WidgetData::Loader(loader) => loader.remove_shadow(),
-            WidgetData::Input(input) => input.remove_shadow(),
-            WidgetData::Clone(clone) => clone.remove_shadow(),
-        }
+    pub fn rem_shadow(&mut self) {
+        self.defaults.shadow = false;
+    }
+}
+
+impl DataTrait for WidgetData {
+    fn build(&self, parent: &gtk4::Box) -> Widget {
+        let widget = self.build(parent);
+        self.defaults.apply(&widget);
+        widget
     }
 }
 /* #endregion Globals */
