@@ -88,7 +88,7 @@ fn derive_kind(name: &str) -> ElemKind {
 fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
     let kind = derive_kind(elem.tag_name().name());
     match kind {
-        ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes()),
+        ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes(), parent),
         ElemKind::Container(kind) => match kind {
             ContainerKind::Normal => process_box(elem.children(), elem.attributes()),
             ContainerKind::Grid => process_grid(elem.children(), elem.attributes()),
@@ -136,17 +136,27 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
 }
 /* #endregion Init */
 /* #region Labels */
-fn process_label(kind: &Text, children: Children, attributes: Attributes) -> Option<WidgetData> {
+fn process_label(
+    kind: &Text,
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<WidgetData> {
     Some(WidgetData::Label(Box::new(process_text(
-        kind, children, attributes,
+        kind, children, attributes, parent,
     )?)))
 }
 
-fn process_text(kind: &Text, children: Children, attributes: Attributes) -> Option<LabelData> {
+fn process_text(
+    kind: &Text,
+    children: Children,
+    attributes: Attributes,
+    parent: &BoxData,
+) -> Option<LabelData> {
     let mut data = LabelData::new();
     match kind {
         Text::Kind(kind) => {
-            data = text_kind(kind, children, attributes, None)?;
+            data = text_kind(kind, children, attributes, None, parent)?;
         }
         Text::Style(style) => data.text = raw_text_style(style, children)?,
     }
@@ -158,37 +168,65 @@ fn text_kind(
     children: Children,
     attributes: Attributes,
     dad: Option<&LabelData>,
+    parent: &BoxData,
 ) -> Option<LabelData> {
     let mut data = text_attributes(attributes, dad);
     for child in children {
         match child.node_type() {
             NodeType::Element => {
-                if let ElemKind::Label(text) = derive_kind(child.tag_name().name()) {
-                    match text {
-                        Text::Kind(kind) => {
-                            if let Some(cur_data) =
-                                text_kind(&kind, child.children(), child.attributes(), Some(&data))
-                            {
-                                if data.text.is_empty() {
-                                    data = cur_data;
-                                } else {
-                                    data.children.push(cur_data);
-                                }
-                            }
+                let name = child.tag_name().name();
+                let label = if let ElemKind::Cloned = derive_kind(name) {
+                    if let Some(WidgetData::Clone(clone)) =
+                        process_cloned(child.attributes(), parent)
+                    {
+                        if let WidgetData::Label(label) = *clone {
+                            println!("{}", label.text);
+                            Some(label)
+                        } else {
+                            None
                         }
+                    } else {
+                        None
+                    }
+                } else if let ElemKind::Label(label) = derive_kind(name) {
+                    match label {
+                        Text::Kind(kind) => text_kind(
+                            &kind,
+                            child.children(),
+                            child.attributes(),
+                            Some(&data),
+                            parent,
+                        )
+                        .map(Box::new),
                         Text::Style(style) => {
                             if let Some(text) = raw_text_style(&style, child.children()) {
+                                // if data.text.is_empty() {
+                                //     ~~data.text = text;
+                                // } else {
+                                //     let mut raw_data = data.clone();
+                                //     raw_data.children = Vec::new();
+                                //     raw_data.text = text;
+                                //     ~~data.children.push(raw_data);
+                                // }
                                 if data.text.is_empty() {
                                     data.text = text;
+                                    None
                                 } else {
                                     let mut raw_data = data.clone();
                                     raw_data.children = Vec::new();
                                     raw_data.text = text;
-                                    data.children.push(raw_data);
+                                    Some(Box::new(raw_data))
                                 }
+                            } else {
+                                None
                             }
                         }
                     }
+                } else {
+                    None
+                };
+                if let Some(label) = label {
+                    data.children.push(*label);
                 }
             }
             NodeType::Text => {
@@ -555,7 +593,7 @@ impl LabelData {
             children: Vec::new(),
         }
     }
-    pub fn compile(&self) -> String {
+    pub fn compile(&self) -> gtk4::glib::GString {
         let mut a = String::new();
         if let Some(font) = &self.font {
             a.push_str(&format!("font='{font}' "));
@@ -752,6 +790,12 @@ impl LabelData {
             }
             nested
         })
+        .into()
+    }
+    pub fn concat(&self) -> String {
+        let mut text = self.text.to_string();
+        self.children.iter().for_each(|x| text.push_str(&x.text));
+        text
     }
     pub fn build(&self) -> Widget {
         let markup = self.compile();
@@ -880,7 +924,9 @@ impl BoxData {
         let widget = gtk4::Box::builder().orientation(self.orientation).build();
         self.defaults.apply(&widget);
         for child in &self.children {
-            widget.append(&child.build(&widget));
+            if !child.is_shadowed() {
+                widget.append(&child.build(&widget));
+            }
         }
         widget
     }
@@ -1018,6 +1064,18 @@ impl ContainerData {
             ContainerData::Grid(grid) => grid.defaults.name = new_name.to_string(),
         }
     }
+    pub fn is_shadowed(&self) -> bool {
+        match &self {
+            ContainerData::Box(container) => container.defaults.shadow,
+            ContainerData::Grid(grid) => grid.defaults.shadow,
+        }
+    }
+    pub fn remove_shadow(&mut self) {
+        match self {
+            ContainerData::Box(container) => container.defaults.shadow = false,
+            ContainerData::Grid(grid) => grid.defaults.shadow = false,
+        }
+    }
 }
 
 /* #endregion Containers */
@@ -1057,8 +1115,10 @@ impl NormalButtonData {
         let widget = gtk4::Button::builder().build();
         self.defaults.apply(&widget);
         if let Some(child) = &self.child {
-            let child = child.build(parent);
-            widget.set_child(Some(&child));
+            if !child.is_shadowed() {
+                let child = child.build(parent);
+                widget.set_child(Some(&child));
+            }
         }
         widget
     }
@@ -1123,8 +1183,10 @@ impl ToggleButtonData {
             }
         }
         if let Some(child) = &self.child {
-            let child = child.build(parent);
-            widget.set_child(Some(&child));
+            if !child.is_shadowed() {
+                let child = child.build(parent);
+                widget.set_child(Some(&child));
+            }
         }
         widget
     }
@@ -1190,10 +1252,12 @@ impl CheckButtonData {
             }
         }
         if let Some(child) = &self.child {
-            let child = child.build(parent);
-            // POV when gtk4-rs forgot to implement ButtonExt for CheckButton, so you
-            // have to implement `CheckButton::set_child(Option<&impl IsA<Widget>)` yourself:
-            widget.set_property("child", Some(&child));
+            if !child.is_shadowed() {
+                let child = child.build(parent);
+                // POV when gtk4-rs forgot to implement ButtonExt for CheckButton, so you
+                // have to implement `CheckButton::set_child(Option<&impl IsA<Widget>)` yourself:
+                widget.set_property("child", Some(&child));
+            }
         }
         widget
     }
@@ -1233,6 +1297,20 @@ impl ButtonData {
             ButtonData::Normal(button) => button.defaults.name = new_name.to_string(),
             ButtonData::Toggle(button) => button.defaults.name = new_name.to_string(),
             ButtonData::Checked(button) => button.defaults.name = new_name.to_string(),
+        }
+    }
+    pub fn is_shadowed(&self) -> bool {
+        match &self {
+            ButtonData::Normal(button) => button.defaults.shadow,
+            ButtonData::Toggle(button) => button.defaults.shadow,
+            ButtonData::Checked(button) => button.defaults.shadow,
+        }
+    }
+    pub fn remove_shadow(&mut self) {
+        match self {
+            ButtonData::Normal(button) => button.defaults.shadow = false,
+            ButtonData::Toggle(button) => button.defaults.shadow = false,
+            ButtonData::Checked(button) => button.defaults.shadow = false,
         }
     }
 }
@@ -1319,6 +1397,18 @@ impl CanvasData {
         match self {
             CanvasData::DrawingArea(canvas) => canvas.defaults.name = new_name.to_string(),
             CanvasData::GLArea(canvas) => canvas.defaults.name = new_name.to_string(),
+        }
+    }
+    pub fn is_shadowed(&self) -> bool {
+        match &self {
+            CanvasData::DrawingArea(canvas) => canvas.defaults.shadow,
+            CanvasData::GLArea(canvas) => canvas.defaults.shadow,
+        }
+    }
+    pub fn remove_shadow(&mut self) {
+        match self {
+            CanvasData::DrawingArea(canvas) => canvas.defaults.shadow = false,
+            CanvasData::GLArea(canvas) => canvas.defaults.shadow = false,
         }
     }
 }
@@ -1474,7 +1564,7 @@ fn progress_bar(
     }
     for child in children {
         if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
-            data.text.push_str(&label.text);
+            data.text.push_str(&label.concat());
         }
     }
     Some(WidgetData::Loader(LoaderData::ProgressBar(data)))
@@ -1550,6 +1640,20 @@ impl LoaderData {
             LoaderData::ProgressBar(bar) => bar.defaults.name = new_name.to_string(),
         }
     }
+    pub fn is_shadowed(&self) -> bool {
+        match &self {
+            LoaderData::Spinner(spinner) => spinner.defaults.shadow,
+            LoaderData::LevelBar(bar) => bar.defaults.shadow,
+            LoaderData::ProgressBar(bar) => bar.defaults.shadow,
+        }
+    }
+    pub fn remove_shadow(&mut self) {
+        match self {
+            LoaderData::Spinner(spinner) => spinner.defaults.shadow = false,
+            LoaderData::LevelBar(bar) => bar.defaults.shadow = false,
+            LoaderData::ProgressBar(bar) => bar.defaults.shadow = false,
+        }
+    }
 }
 /* #endregion Loaders */
 /* #region Inputs */
@@ -1599,7 +1703,7 @@ fn process_textview(
     }
     for child in children {
         if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
-            data.buffer.push_str(&label.text);
+            data.buffer.push_str(&label.concat());
         }
     }
     Some(WidgetData::Input(InputData::TextView(data)))
@@ -1917,7 +2021,7 @@ fn editable_label(
     }
     for child in children {
         if let Some(WidgetData::Label(label)) = process_element(&child, parent) {
-            data.text.push_str(&label.text);
+            data.text.push_str(&label.concat());
         }
     }
     Some(WidgetData::Input(InputData::Editable(data)))
@@ -1999,6 +2103,26 @@ impl InputData {
             InputData::Editable(label) => label.defaults.name = new_name.to_string(),
         }
     }
+    pub fn is_shadowed(&self) -> bool {
+        match &self {
+            InputData::TextView(input) => input.defaults.shadow,
+            InputData::Entry(entry) => entry.defaults.shadow,
+            InputData::SearchEntry(entry) => entry.defaults.shadow,
+            InputData::PasswordEntry(entry) => entry.defaults.shadow,
+            InputData::Spin(spin) => spin.defaults.shadow,
+            InputData::Editable(label) => label.defaults.shadow,
+        }
+    }
+    pub fn remove_shadow(&mut self) {
+        match self {
+            InputData::TextView(input) => input.defaults.shadow = false,
+            InputData::Entry(entry) => entry.defaults.shadow = false,
+            InputData::SearchEntry(entry) => entry.defaults.shadow = false,
+            InputData::PasswordEntry(entry) => entry.defaults.shadow = false,
+            InputData::Spin(spin) => spin.defaults.shadow = false,
+            InputData::Editable(label) => label.defaults.shadow = false,
+        }
+    }
 }
 /* #endregion Inputs */
 /* #region Clones */
@@ -2026,6 +2150,7 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
         for cur_child in &parent.children {
             if cur_child.get_name() == old_name {
                 let mut new_child = cur_child.clone();
+                new_child.remove_shadow();
                 if let Some(new_name) = new_name {
                     new_child.set_name(new_name);
                 }
@@ -2059,6 +2184,7 @@ impl Margin {
 
 #[derive(Debug, PartialEq, Clone)]
 struct WidgetDefaults {
+    shadow: bool,
     halign: gtk4::Align,
     valign: gtk4::Align,
     hexpand: bool,
@@ -2076,6 +2202,7 @@ struct WidgetDefaults {
 impl WidgetDefaults {
     pub fn new() -> Self {
         Self {
+            shadow: false,
             halign: gtk4::Align::Start,
             valign: gtk4::Align::Start,
             hexpand: false,
@@ -2093,6 +2220,10 @@ impl WidgetDefaults {
     pub fn modify(&mut self, attr: roxmltree::Attribute) {
         let val = attr.value();
         match attr.name() {
+            "_shadow" | "_ref" => match val {
+                "false" | "f" | "no" | "n" => self.shadow = false,
+                _ => self.shadow = true,
+            },
             "_halign" => match val {
                 "fill" => self.halign = gtk4::Align::Fill,
                 "start" | "left" | "front" | "beginning" => self.halign = gtk4::Align::Start,
@@ -2240,6 +2371,28 @@ impl WidgetData {
             WidgetData::Loader(loader) => loader.set_name(new_name),
             WidgetData::Input(input) => input.set_name(new_name),
             WidgetData::Clone(clone) => clone.set_name(new_name),
+        }
+    }
+    pub fn is_shadowed(&self) -> bool {
+        match &self {
+            WidgetData::Label(label) => label.defaults.shadow,
+            WidgetData::Container(container) => container.is_shadowed(),
+            WidgetData::Button(button) => button.is_shadowed(),
+            WidgetData::Canvas(canvas) => canvas.is_shadowed(),
+            WidgetData::Loader(loader) => loader.is_shadowed(),
+            WidgetData::Input(input) => input.is_shadowed(),
+            WidgetData::Clone(clone) => clone.is_shadowed(),
+        }
+    }
+    pub fn remove_shadow(&mut self) {
+        match self {
+            WidgetData::Label(label) => label.defaults.shadow = false,
+            WidgetData::Container(container) => container.remove_shadow(),
+            WidgetData::Button(button) => button.remove_shadow(),
+            WidgetData::Canvas(canvas) => canvas.remove_shadow(),
+            WidgetData::Loader(loader) => loader.remove_shadow(),
+            WidgetData::Input(input) => input.remove_shadow(),
+            WidgetData::Clone(clone) => clone.remove_shadow(),
         }
     }
 }
