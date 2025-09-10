@@ -88,21 +88,27 @@ fn derive_kind(name: &str) -> ElemKind {
 
 fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
     let kind = derive_kind(elem.tag_name().name());
-    match kind {
+    let mut defaults = WidgetDefaults::new();
+    let data = match kind {
         ElemKind::Label(kind) => process_label(&kind, elem.children(), elem.attributes(), parent),
         ElemKind::Container(kind) => match kind {
-            ContainerKind::Normal => process_box(elem.children(), elem.attributes()),
+            ContainerKind::Normal => process_box(elem.children()),
             ContainerKind::Grid => process_grid(elem.children(), elem.attributes()),
             ContainerKind::GridItem => None,
         },
         ElemKind::Button(kind) => match kind {
-            ButtonKind::Normal => normal_button(elem.children(), elem.attributes(), parent),
+            ButtonKind::Normal => normal_button(elem.children(), parent),
             ButtonKind::Toggle => toggle_button(elem.children(), elem.attributes(), parent),
             ButtonKind::Checked => check_button(elem.children(), elem.attributes(), parent),
         },
         ElemKind::Canvas(canvas) => match canvas {
-            CanvasKind::DrawingArea => drawing_area(elem.attributes()),
-            CanvasKind::GLArea => gl_area(elem.attributes()),
+            CanvasKind::DrawingArea => drawing_area(),
+            CanvasKind::GLArea => gl_area(),
+        },
+        ElemKind::Loader(loader) => match loader {
+            LoaderKind::Spinner => spinner(elem.attributes()),
+            LoaderKind::LevelBar => level_bar(elem.attributes()),
+            LoaderKind::ProgressBar => progress_bar(elem.children(), elem.attributes(), parent),
         },
         ElemKind::Input(input) => match input {
             InputKind::TextView => process_textview(elem.children(), elem.attributes(), parent),
@@ -114,28 +120,29 @@ fn process_element(elem: &Node, parent: &BoxData) -> Option<WidgetData> {
         },
         ElemKind::Cloned => {
             if !elem.has_children() {
-                process_cloned(elem.attributes(), parent)
+                if let Some(widget) = process_cloned(elem.attributes(), parent) {
+                    defaults = widget.defaults;
+                    Some(widget.data)
+                } else {
+                    None
+                }
             } else {
                 None
             }
         }
-        ElemKind::Fallback => elem
-            .text()
-            .map(|x| x.trim())
-            .filter(|x| !x.is_empty())
-            .map(|text| {
-                let mut data = LabelData::new();
-                data.text = text.to_string();
-                WidgetData {
-                    defaults: WidgetDefaults::new(),
-                    data: DataEnum::Label(Box::new(data)),
-                }
-            }),
-        ElemKind::Loader(loader) => match loader {
-            LoaderKind::Spinner => spinner(elem.attributes()),
-            LoaderKind::LevelBar => level_bar(elem.attributes()),
-            LoaderKind::ProgressBar => progress_bar(elem.children(), elem.attributes(), parent),
-        },
+        ElemKind::Fallback => elem.text().filter(|x| !x.trim().is_empty()).map(|text| {
+            let mut data = LabelData::new();
+            data.text = text.to_string();
+            DataEnum::Label(Box::new(data))
+        }),
+    };
+    if let Some(data) = data {
+        for attr in elem.attributes() {
+            defaults.modify(attr, parent);
+        }
+        Some(WidgetData { defaults, data })
+    } else {
+        None
     }
 }
 /* #endregion Init */
@@ -145,15 +152,8 @@ fn process_label(
     children: Children,
     attributes: Attributes,
     parent: &BoxData,
-) -> Option<WidgetData> {
-    if let Some(data) = process_text(kind, children, attributes, parent) {
-        Some(WidgetData {
-            defaults: data.1,
-            data: DataEnum::Label(Box::new(data.0)),
-        })
-    } else {
-        None
-    }
+) -> Option<DataEnum> {
+    process_text(kind, children, attributes, parent).map(|data| DataEnum::Label(Box::new(data)))
 }
 
 fn process_text(
@@ -161,13 +161,13 @@ fn process_text(
     children: Children,
     attributes: Attributes,
     parent: &BoxData,
-) -> Option<(LabelData, WidgetDefaults)> {
+) -> Option<LabelData> {
     match kind {
         Text::Kind(kind) => text_kind(kind, children, attributes, None, parent),
         Text::Style(style) => {
             let mut data = LabelData::new();
             data.text = raw_text_style(style, children)?;
-            Some((data, WidgetDefaults::new()))
+            Some(data)
         }
     }
 }
@@ -178,15 +178,15 @@ fn text_kind(
     attributes: Attributes,
     dad: Option<&LabelData>,
     parent: &BoxData,
-) -> Option<(LabelData, WidgetDefaults)> {
-    let (mut data, defaults) = text_attributes(attributes, dad);
+) -> Option<LabelData> {
+    let mut data = text_attributes(attributes, dad);
     for child in children {
         match child.node_type() {
             NodeType::Element => {
                 let name = child.tag_name().name();
-                if let Some((label, _)) = if let ElemKind::Cloned = derive_kind(name) {
+                if let Some(label) = if let ElemKind::Cloned = derive_kind(name) {
                     if let Some(WidgetData {
-                        defaults: sub_defaults,
+                        defaults: _,
                         data: DataEnum::Clone(clone),
                     }) = process_cloned(child.attributes(), parent)
                     {
@@ -195,7 +195,7 @@ fn text_kind(
                             ..
                         } = *clone
                         {
-                            Some((*label, sub_defaults))
+                            Some(*label)
                         } else {
                             None
                         }
@@ -220,7 +220,7 @@ fn text_kind(
                                     let mut raw_data = data.clone();
                                     raw_data.children = Vec::new();
                                     raw_data.text = text;
-                                    Some((raw_data, WidgetDefaults::new()))
+                                    Some(raw_data)
                                 }
                             } else {
                                 None
@@ -257,10 +257,10 @@ fn text_kind(
         TextKind::Header6 => data.size = Some("x-small".to_string()),
         TextKind::Normal => {}
     }
-    Some((data, defaults))
+    Some(data)
 }
 
-fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> (LabelData, WidgetDefaults) {
+fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> LabelData {
     let mut data = if let Some(dad) = dad {
         let mut data = dad.clone();
         data.text = String::new();
@@ -269,7 +269,6 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> (LabelDat
     } else {
         LabelData::new()
     };
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -449,10 +448,10 @@ fn text_attributes(attributes: Attributes, dad: Option<&LabelData>) -> (LabelDat
                 "s" | "sentence" => data.segment = Some(l_attr::Segment::Sentence),
                 _ => {}
             },
-            _ => defaults.modify(attr),
+            _ => {}
         };
     }
-    (data, defaults)
+    data
 }
 
 mod l_attr {
@@ -850,7 +849,7 @@ fn node_escape(raw: &str) -> String {
         .replace(">", "&gt;")
         .replace("<", "&lt;")
 }
-fn _attr_escape(raw: &str) -> String {
+fn attr_escape(raw: &str) -> String {
     raw.replace("&", "&amp;")
         .replace("\"", "&quot;")
         .replace("'", "&apos;")
@@ -887,21 +886,14 @@ enum TextStyle {
 }
 /* #endregion Labels */
 /* #region Containers */
-fn process_box(children: Children, attributes: Attributes) -> Option<WidgetData> {
+fn process_box(children: Children) -> Option<DataEnum> {
     let mut data = BoxData::new();
-    let mut defaults = WidgetDefaults::new();
-    for attr in attributes {
-        data.modify(attr, &mut defaults);
-    }
     for child in children {
         if let Some(child) = process_element(&child, &data) {
             data.children.push(child);
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Container(ContainerData::Box(data)),
-    })
+    Some(DataEnum::Container(ContainerData::Box(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -915,16 +907,6 @@ impl BoxData {
         BoxData {
             orientation: gtk4::Orientation::Vertical,
             children: Vec::new(),
-        }
-    }
-    pub fn modify(&mut self, attr: roxmltree::Attribute, defaults: &mut WidgetDefaults) {
-        let val = attr.value();
-        match attr.name() {
-            "orientation" | "align" => match val {
-                "horizontal" | "h" => self.orientation = gtk4::Orientation::Horizontal,
-                _ => self.orientation = gtk4::Orientation::Vertical,
-            },
-            _ => defaults.modify(attr),
         }
     }
     pub fn dirty_build(&self, defaults: Option<&WidgetDefaults>) -> gtk4::Box {
@@ -941,9 +923,8 @@ impl BoxData {
     }
 }
 
-fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData> {
+fn process_grid(children: Children, attributes: Attributes) -> Option<DataEnum> {
     let mut data = GridData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "column_homogeneous" | "col" => match attr.value() {
@@ -954,7 +935,7 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData
                 "n" | "f" | "no" | "false" => data.row_hom = false,
                 _ => data.row_hom = true,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
     for child in children {
@@ -1001,7 +982,7 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData
                         gridchild.height = val;
                     }
                 }
-                _ => gridchild.parent.modify(attr, &mut gridchild.defaults),
+                _ => gridchild.defaults.modify(attr, &gridchild.parent),
             };
         }
         for child in child.children() {
@@ -1013,10 +994,7 @@ fn process_grid(children: Children, attributes: Attributes) -> Option<WidgetData
         }
         data.children.push(gridchild);
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Container(ContainerData::Grid(data)),
-    })
+    Some(DataEnum::Container(ContainerData::Grid(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1084,26 +1062,15 @@ impl DataTrait for ContainerData {
 
 /* #endregion Containers */
 /* #region Buttons */
-fn normal_button(
-    children: Children,
-    attributes: Attributes,
-    parent: &BoxData,
-) -> Option<WidgetData> {
+fn normal_button(children: Children, parent: &BoxData) -> Option<DataEnum> {
     let mut data = NormalButtonData::new();
-    let mut defaults = WidgetDefaults::new();
-    for attr in attributes {
-        defaults.modify(attr);
-    }
     for child in children {
         if let Some(widget) = process_element(&child, parent) {
             data.child = Some(Box::from(widget));
             break;
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Button(ButtonData::Normal(data)),
-    })
+    Some(DataEnum::Button(ButtonData::Normal(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1117,13 +1084,8 @@ impl NormalButtonData {
     }
 }
 
-fn toggle_button(
-    children: Children,
-    attributes: Attributes,
-    parent: &BoxData,
-) -> Option<WidgetData> {
+fn toggle_button(children: Children, attributes: Attributes, parent: &BoxData) -> Option<DataEnum> {
     let mut data = ToggleButtonData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
@@ -1133,7 +1095,7 @@ fn toggle_button(
             "group" => {
                 data.group = Some(attr.value().to_string());
             }
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
     for child in children {
@@ -1142,10 +1104,7 @@ fn toggle_button(
             break;
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Button(ButtonData::Toggle(data)),
-    })
+    Some(DataEnum::Button(ButtonData::Toggle(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1165,13 +1124,8 @@ impl ToggleButtonData {
     }
 }
 
-fn check_button(
-    children: Children,
-    attributes: Attributes,
-    parent: &BoxData,
-) -> Option<WidgetData> {
+fn check_button(children: Children, attributes: Attributes, parent: &BoxData) -> Option<DataEnum> {
     let mut data = CheckButtonData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "checked" | "check" => match attr.value() {
@@ -1181,7 +1135,7 @@ fn check_button(
             "group" => {
                 data.group = Some(attr.value().to_string());
             }
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
     for child in children {
@@ -1190,10 +1144,7 @@ fn check_button(
             break;
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Button(ButtonData::Checked(data)),
-    })
+    Some(DataEnum::Button(ButtonData::Checked(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1290,16 +1241,9 @@ impl DataTrait for ButtonData {
 }
 /* #endregion Buttons */
 /* #region Canvases */
-fn gl_area(attributes: Attributes) -> Option<WidgetData> {
+fn gl_area() -> Option<DataEnum> {
     let data = GLAreaData::new();
-    let mut defaults = WidgetDefaults::new();
-    for attr in attributes {
-        defaults.modify(attr);
-    }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Canvas(CanvasData::GLArea(data)),
-    })
+    Some(DataEnum::Canvas(CanvasData::GLArea(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1311,16 +1255,9 @@ impl GLAreaData {
     }
 }
 
-fn drawing_area(attributes: Attributes) -> Option<WidgetData> {
+fn drawing_area() -> Option<DataEnum> {
     let data = DrawingAreaData::new();
-    let mut defaults = WidgetDefaults::new();
-    for attr in attributes {
-        defaults.modify(attr);
-    }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Canvas(CanvasData::DrawingArea(data)),
-    })
+    Some(DataEnum::Canvas(CanvasData::DrawingArea(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1354,22 +1291,18 @@ impl DataTrait for CanvasData {
 }
 /* #endregion Canvases */
 /* #region Loaders */
-fn spinner(attributes: Attributes) -> Option<WidgetData> {
+fn spinner(attributes: Attributes) -> Option<DataEnum> {
     let mut data = SpinnerData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         match attr.name() {
             "spin" | "spinning" => match attr.value() {
                 "f" | "false" | "n" | "no" => data.spinning = false,
                 _ => data.spinning = true,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Loader(LoaderData::Spinner(data)),
-    })
+    Some(DataEnum::Loader(LoaderData::Spinner(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1383,9 +1316,8 @@ impl SpinnerData {
     }
 }
 
-fn level_bar(attributes: Attributes) -> Option<WidgetData> {
+fn level_bar(attributes: Attributes) -> Option<DataEnum> {
     let mut data = LevelBarData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1416,13 +1348,10 @@ fn level_bar(attributes: Attributes) -> Option<WidgetData> {
                 "false" | "f" | "no" | "n" => data.inverted = false,
                 _ => data.inverted = true,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Loader(LoaderData::LevelBar(data)),
-    })
+    Some(DataEnum::Loader(LoaderData::LevelBar(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1446,13 +1375,8 @@ impl LevelBarData {
     }
 }
 
-fn progress_bar(
-    children: Children,
-    attributes: Attributes,
-    parent: &BoxData,
-) -> Option<WidgetData> {
+fn progress_bar(children: Children, attributes: Attributes, parent: &BoxData) -> Option<DataEnum> {
     let mut data = ProgressBarData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1486,7 +1410,7 @@ fn progress_bar(
                 "false" | "f" | "no" | "n" => data.inverted = false,
                 _ => data.inverted = true,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
     for child in children {
@@ -1498,10 +1422,7 @@ fn progress_bar(
             data.text.push_str(&label.concat());
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Loader(LoaderData::ProgressBar(data)),
-    })
+    Some(DataEnum::Loader(LoaderData::ProgressBar(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1571,9 +1492,8 @@ fn process_textview(
     children: Children,
     attributes: Attributes,
     parent: &BoxData,
-) -> Option<WidgetData> {
+) -> Option<DataEnum> {
     let mut data = TextViewData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1609,7 +1529,7 @@ fn process_textview(
                 "false" | "f" | "no" | "n" => data.monospace = false,
                 _ => data.monospace = true,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
     for child in children {
@@ -1621,10 +1541,7 @@ fn process_textview(
             data.buffer.push_str(&label.concat());
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Input(InputData::TextView(data)),
-    })
+    Some(DataEnum::Input(InputData::TextView(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1652,9 +1569,8 @@ impl TextViewData {
     }
 }
 
-fn process_entry(attributes: Attributes) -> Option<WidgetData> {
+fn process_entry(attributes: Attributes) -> Option<DataEnum> {
     let mut data = EntryData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1665,13 +1581,10 @@ fn process_entry(attributes: Attributes) -> Option<WidgetData> {
                     data.max = val;
                 }
             }
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Input(InputData::Entry(data)),
-    })
+    Some(DataEnum::Input(InputData::Entry(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1691,9 +1604,8 @@ impl EntryData {
     }
 }
 
-fn search_entry(attributes: Attributes) -> Option<WidgetData> {
+fn search_entry(attributes: Attributes) -> Option<DataEnum> {
     let mut data = SearchEntryData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1703,13 +1615,10 @@ fn search_entry(attributes: Attributes) -> Option<WidgetData> {
                 "true" | "t" | "yes" | "y" => data.activate = true,
                 _ => data.activate = false,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Input(InputData::SearchEntry(data)),
-    })
+    Some(DataEnum::Input(InputData::SearchEntry(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1729,9 +1638,8 @@ impl SearchEntryData {
     }
 }
 
-fn password_entry(attributes: Attributes) -> Option<WidgetData> {
+fn password_entry(attributes: Attributes) -> Option<DataEnum> {
     let mut data = PasswordEntryData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1745,13 +1653,10 @@ fn password_entry(attributes: Attributes) -> Option<WidgetData> {
                 "true" | "t" | "yes" | "y" => data.activate = true,
                 _ => data.activate = false,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Input(InputData::PasswordEntry(data)),
-    })
+    Some(DataEnum::Input(InputData::PasswordEntry(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1773,9 +1678,8 @@ impl PasswordEntryData {
     }
 }
 
-fn spin_button(attributes: Attributes) -> Option<WidgetData> {
+fn spin_button(attributes: Attributes) -> Option<DataEnum> {
     let mut data = SpinButtonData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1837,13 +1741,10 @@ fn spin_button(attributes: Attributes) -> Option<WidgetData> {
                 "false" | "f" | "no" | "n" => data.snap = false,
                 _ => data.snap = true,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Input(InputData::Spin(data)),
-    })
+    Some(DataEnum::Input(InputData::Spin(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1875,9 +1776,8 @@ fn editable_label(
     children: Children,
     attributes: Attributes,
     parent: &BoxData,
-) -> Option<WidgetData> {
+) -> Option<DataEnum> {
     let mut data = EditableLabelData::new();
-    let mut defaults = WidgetDefaults::new();
     for attr in attributes {
         let val = attr.value();
         match attr.name() {
@@ -1885,7 +1785,7 @@ fn editable_label(
                 "true" | "t" | "yes" | "y" => data.editable = true,
                 _ => data.editable = false,
             },
-            _ => defaults.modify(attr),
+            _ => {}
         }
     }
     for child in children {
@@ -1897,10 +1797,7 @@ fn editable_label(
             data.text.push_str(&label.concat());
         }
     }
-    Some(WidgetData {
-        defaults,
-        data: DataEnum::Input(InputData::Editable(data)),
-    })
+    Some(DataEnum::Input(InputData::Editable(data)))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -2000,8 +1897,8 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
     let mut old_name = None;
     let mut new_name = None;
     for attr in attributes {
-        let val = attr.value().trim();
-        if !val.is_empty() {
+        let val = attr.value();
+        if !val.trim().is_empty() {
             match attr.name() {
                 "object" | "from" | "import" | "src" | "source" => {
                     old_name = Some(val);
@@ -2017,18 +1914,41 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
         return None;
     }
     if let Some(old_name) = old_name {
-        for cur_child in &parent.children {
-            if cur_child.get_name() == old_name {
-                let mut new_child = cur_child.clone();
-                new_child.rem_shadow();
-                if let Some(new_name) = new_name {
-                    new_child.set_name(new_name);
-                }
-                return Some(WidgetData {
-                    defaults: WidgetDefaults::new(),
-                    data: DataEnum::Clone(Box::new(new_child)),
-                });
+        //     for cur_child in &parent.children {
+        //         if cur_child.get_name() == old_name {
+        //             let mut new_child = cur_child.clone();
+        //             new_child.rem_shadow();
+        //             if let Some(new_name) = new_name {
+        //                 new_child.set_name(new_name);
+        //             }
+        //             return Some(WidgetData {
+        //                 defaults: WidgetDefaults::new(),
+        //                 data: DataEnum::Clone(Box::new(new_child)),
+        //             });
+        //         }
+        //     }
+        if let Some(mut child) = get_clone(old_name, parent) {
+            if let Some(new_name) = new_name {
+                child.set_name(new_name);
             }
+            Some(WidgetData {
+                defaults: WidgetDefaults::new(),
+                data: DataEnum::Clone(Box::new(child)),
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn get_clone(old_name: &str, parent: &BoxData) -> Option<WidgetData> {
+    for child in &parent.children {
+        if child.get_name() == old_name {
+            let mut child = child.clone();
+            child.rem_shadow();
+            return Some(child);
         }
     }
     None
@@ -2062,7 +1982,7 @@ struct WidgetDefaults {
     valign: gtk4::Align,
     hexpand: bool,
     vexpand: bool,
-    tooltip: Option<String>,
+    tooltip: Option<gtk4::glib::GString>,
     opacity: f64,
     margin: Margin,
     name: String,
@@ -2090,7 +2010,7 @@ impl WidgetDefaults {
             focusable: true,
         }
     }
-    pub fn modify(&mut self, attr: roxmltree::Attribute) {
+    pub fn modify(&mut self, attr: roxmltree::Attribute, parent: &BoxData) {
         let val = attr.value();
         match attr.name() {
             "_shadow" | "_ref" => match val {
@@ -2122,8 +2042,21 @@ impl WidgetDefaults {
                 _ => self.vexpand = true,
             },
             "_tooltip" => {
-                let val = val.trim().to_owned();
-                self.tooltip = if val.is_empty() { None } else { Some(val) }
+                if !val.trim().is_empty() {
+                    if let Some(val) = val.strip_prefix(":") {
+                        if let Some(WidgetData {
+                            data: DataEnum::Label(label),
+                            ..
+                        }) = get_clone(val, parent)
+                        {
+                            self.tooltip = Some(label.compile());
+                        }
+                    } else if let Some(val) = val.strip_prefix("\\:") {
+                        self.tooltip = Some(format!(":{}", attr_escape(val)).into());
+                    } else {
+                        self.tooltip = Some(attr_escape(val).into())
+                    }
+                }
             }
             "_opacity" => {
                 if let Ok(val) = val.parse::<f64>() {
@@ -2145,7 +2078,7 @@ impl WidgetDefaults {
                     self.margin.end = end;
                 }
             }
-            "_name" | "_" => self.name = val.trim().to_string(),
+            "_name" | "_" => self.name = val.to_string(),
             "_size" | "_size_req" => {
                 if let Some((Ok(width), Ok(height))) = val
                     .split_once(',')
@@ -2174,7 +2107,7 @@ impl WidgetDefaults {
         widget.set_vexpand(self.vexpand);
         widget.set_halign(self.halign);
         widget.set_valign(self.valign);
-        widget.set_tooltip_text(self.tooltip.as_deref());
+        widget.set_tooltip_markup(self.tooltip.as_deref());
         widget.set_opacity(self.opacity);
         widget.set_margin_top(self.margin.top);
         widget.set_margin_bottom(self.margin.bottom);
