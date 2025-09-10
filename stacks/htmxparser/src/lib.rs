@@ -184,26 +184,8 @@ fn text_kind(
         match child.node_type() {
             NodeType::Element => {
                 let name = child.tag_name().name();
-                if let Some(label) = if let ElemKind::Cloned = derive_kind(name) {
-                    if let Some(WidgetData {
-                        defaults: _,
-                        data: DataEnum::Clone(clone),
-                    }) = process_cloned(child.attributes(), parent)
-                    {
-                        if let WidgetData {
-                            data: DataEnum::Label(label),
-                            ..
-                        } = *clone
-                        {
-                            Some(*label)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else if let ElemKind::Label(label) = derive_kind(name) {
-                    match label {
+                if let Some(label) = match derive_kind(name) {
+                    ElemKind::Label(label) => match label {
                         Text::Kind(kind) => text_kind(
                             &kind,
                             child.children(),
@@ -226,9 +208,23 @@ fn text_kind(
                                 None
                             }
                         }
+                    },
+                    ElemKind::Cloned => {
+                        if !child.has_children() {
+                            if let Some(WidgetData {
+                                data: DataEnum::Label(label),
+                                ..
+                            }) = process_cloned(child.attributes(), parent)
+                            {
+                                Some(*label)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
-                } else {
-                    None
+                    _ => None,
                 } {
                     data.children.push(label);
                 }
@@ -889,8 +885,12 @@ enum TextStyle {
 fn process_box(children: Children) -> Option<DataEnum> {
     let mut data = BoxData::new();
     for child in children {
-        if let Some(child) = process_element(&child, &data) {
-            data.children.push(child);
+        if let Some(widget) = process_element(&child, &data) {
+            let mut defaults = WidgetDefaults::new();
+            for attr in child.attributes() {
+                defaults.modify(attr, &data);
+            }
+            data.children.push(widget);
         }
     }
     Some(DataEnum::Container(ContainerData::Box(data)))
@@ -913,7 +913,9 @@ impl BoxData {
         let widget = gtk4::Box::builder().orientation(self.orientation).build();
         for child in &self.children {
             if !child.get_shadow() {
-                widget.append(&child.build(&widget));
+                let built = child.build(&widget);
+                child.defaults.apply(&built);
+                widget.append(&built);
             }
         }
         if let Some(defaults) = defaults {
@@ -1914,27 +1916,11 @@ fn process_cloned(attributes: Attributes, parent: &BoxData) -> Option<WidgetData
         return None;
     }
     if let Some(old_name) = old_name {
-        //     for cur_child in &parent.children {
-        //         if cur_child.get_name() == old_name {
-        //             let mut new_child = cur_child.clone();
-        //             new_child.rem_shadow();
-        //             if let Some(new_name) = new_name {
-        //                 new_child.set_name(new_name);
-        //             }
-        //             return Some(WidgetData {
-        //                 defaults: WidgetDefaults::new(),
-        //                 data: DataEnum::Clone(Box::new(new_child)),
-        //             });
-        //         }
-        //     }
         if let Some(mut child) = get_clone(old_name, parent) {
             if let Some(new_name) = new_name {
                 child.set_name(new_name);
             }
-            Some(WidgetData {
-                defaults: WidgetDefaults::new(),
-                data: DataEnum::Clone(Box::new(child)),
-            })
+            Some(child)
         } else {
             None
         }
@@ -2142,7 +2128,6 @@ enum DataEnum {
     Canvas(CanvasData),
     Loader(LoaderData),
     Input(InputData),
-    Clone(Box<WidgetData>),
 }
 
 pub trait DataTrait {
@@ -2158,7 +2143,6 @@ impl DataTrait for DataEnum {
             DataEnum::Canvas(canvas) => canvas.build(parent),
             DataEnum::Loader(loader) => loader.build(parent),
             DataEnum::Input(input) => input.build(parent),
-            DataEnum::Clone(clone) => clone.build(parent),
         }
     }
 }
